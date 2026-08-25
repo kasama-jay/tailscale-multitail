@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net/netip"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/jay/tailscale-multitail/internal/config"
 	"github.com/jay/tailscale-multitail/internal/dnsmux"
+	"github.com/jay/tailscale-multitail/internal/hosttun"
 	"github.com/jay/tailscale-multitail/internal/runtime"
 )
 
@@ -28,6 +30,7 @@ func main() {
 	valid := fs.Bool("validate-config", false, "validate and exit")
 	once := fs.Bool("once", false, "start profiles, print status JSON, and exit")
 	dnsListen := fs.String("dns-listen", "", "merged DNS listen address (test override; e.g. 127.0.0.1:1053)")
+	hostTUN := fs.Bool("host-tun", false, "create the Linux host TUN and target-specific routes")
 	fs.Parse(os.Args[2:])
 	c, e := config.Load(*cp)
 	if e != nil {
@@ -52,6 +55,25 @@ func main() {
 	leases, e := s.EffectiveLeases()
 	if e != nil {
 		log.Fatal(e)
+	}
+	if *hostTUN {
+		pool, _ := netip.ParsePrefix(c.EffectiveIPv4CIDR)
+		h, e := hosttun.Create(c.Interface, c.MTU, c.RoutingTable, pool)
+		if e != nil {
+			log.Fatal(e)
+		}
+		routes := make([]netip.Addr, 0, len(inv.Targets)+len(leases))
+		for _, t := range inv.Targets {
+			routes = append(routes, t.CanonicalIP)
+		}
+		for _, ip := range leases {
+			routes = append(routes, ip)
+		}
+		if e := h.AddTargets(routes); e != nil {
+			h.Close()
+			log.Fatal(e)
+		}
+		defer h.Close()
 	}
 	if *dnsListen != "" {
 		dnsServer := dnsmux.New(inv.Targets, leases, s.QueryDNS)
