@@ -47,6 +47,7 @@ func reverseDomains(c config.Config) []string {
 	}
 	return out
 }
+func fail(v any) int { log.Print(v); return 1 }
 func run() int {
 	if len(os.Args) == 2 && os.Args[1] == "--version" {
 		fmt.Println(version)
@@ -69,25 +70,25 @@ func run() int {
 	fs.Parse(os.Args[2:])
 	c, e := config.Load(*cp)
 	if e != nil {
-		log.Fatal(e)
+		return fail(e)
 	}
 	if *valid {
 		fmt.Println("valid")
 		return 0
 	}
 	if *root == config.DefaultStateRoot && filepath.IsAbs(*cp) == false {
-		log.Fatal("relative config paths require an explicit --state-root for test safety")
+		return fail("relative config paths require an explicit --state-root for test safety")
 	}
 	s, e := runtime.New(c, *root)
 	if e != nil {
-		log.Fatal(e)
+		return fail(e)
 	}
 	if e = s.Start(context.Background()); e != nil {
-		log.Fatal(e)
+		return fail(e)
 	}
 	defer s.Close()
 	if e = s.ValidateDNSSuffixes(); e != nil {
-		log.Fatal(e)
+		return fail(e)
 	}
 	inv := s.Inventory()
 	leases, e := s.EffectiveLeases()
@@ -96,13 +97,13 @@ func run() int {
 	var dnsServer *dnsmux.Server
 	var resolved *resolvedclient.Client
 	if e != nil {
-		log.Fatal(e)
+		return fail(e)
 	}
 	if *hostTUN {
 		pool, _ := netip.ParsePrefix(c.EffectiveIPv4CIDR)
 		h, e = hosttun.Create(c.Interface, c.MTU, c.RoutingTable, pool)
 		if e != nil {
-			log.Fatal(e)
+			return fail(e)
 		}
 		routes := make([]netip.Addr, 0, len(inv.Targets)+len(leases))
 		for _, t := range inv.Targets {
@@ -113,19 +114,19 @@ func run() int {
 		}
 		if e := h.AddTargets(routes); e != nil {
 			h.Close()
-			log.Fatal(e)
+			return fail(e)
 		}
 		defer h.Close()
 		m, e = mux.New(h, pool.Masked().Addr().Next(), inv.Targets, leases, s.DatapathProfiles())
 		if e != nil {
-			log.Fatal(e)
+			return fail(e)
 		}
 		m.Debug = *debugPackets
 		m.Run(context.Background())
 	}
 	if *useResolved {
 		if h == nil {
-			log.Fatal("--resolved requires --host-tun")
+			return fail("--resolved requires --host-tun")
 		}
 		if *dnsListen == "" {
 			pool, _ := netip.ParsePrefix(c.EffectiveIPv4CIDR)
@@ -135,7 +136,7 @@ func run() int {
 	if *dnsListen != "" {
 		dnsServer = dnsmux.New(inv.Targets, leases, s.QueryDNS)
 		if e := dnsServer.Start(*dnsListen); e != nil {
-			log.Fatal(e)
+			return fail(e)
 		}
 		defer dnsServer.Close()
 	}
@@ -144,7 +145,7 @@ func run() int {
 		resolved, e = resolvedclient.Configure(x, h.Index(), netip.MustParseAddr(strings.Split(*dnsListen, ":")[0]), s.DNSSuffixes(), reverseDomains(c))
 		cancel()
 		if e != nil {
-			log.Fatal(e)
+			return fail(e)
 		}
 		defer func() {
 			if resolved != nil {
@@ -230,7 +231,7 @@ func run() int {
 			return out
 		})
 		if e != nil {
-			log.Fatal(e)
+			return fail(e)
 		}
 		defer cs.Close()
 	}
