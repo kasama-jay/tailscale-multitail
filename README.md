@@ -89,5 +89,9 @@ tailscale-multitaild run --config /tmp/config.yaml --state-root /tmp/state --onc
 `--once` starts the configured profiles, prints their LocalAPI-derived status
 and the ordered aggregate peer/Service inventory as JSON, then exits. The
 aggregate preserves canonical-IP collisions and implements v1's ordered
-first-match raw-IP selection policy. Production host-TUN creation, routes,
-DNS, and address translation remain subsequent milestones.
+first-match raw-IP selection policy.
+
+With `--host-tun`, the daemon's effective-IP mux rewrites IPv4 TCP, UDP, and
+ICMP packets between `multitail0` and the selected profile TUN. It currently
+supports only unfragmented IPv4 packets; bounded fragmentation, raw-canonical
+flow conntrack, and the persistent lease database remain later work.

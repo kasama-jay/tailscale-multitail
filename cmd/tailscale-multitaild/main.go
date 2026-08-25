@@ -16,6 +16,7 @@ import (
 	"github.com/jay/tailscale-multitail/internal/config"
 	"github.com/jay/tailscale-multitail/internal/dnsmux"
 	"github.com/jay/tailscale-multitail/internal/hosttun"
+	"github.com/jay/tailscale-multitail/internal/mux"
 	"github.com/jay/tailscale-multitail/internal/runtime"
 )
 
@@ -31,6 +32,7 @@ func main() {
 	once := fs.Bool("once", false, "start profiles, print status JSON, and exit")
 	dnsListen := fs.String("dns-listen", "", "merged DNS listen address (test override; e.g. 127.0.0.1:1053)")
 	hostTUN := fs.Bool("host-tun", false, "create the Linux host TUN and target-specific routes")
+	debugPackets := fs.Bool("debug-packets", false, "temporarily log packet-mux decisions")
 	fs.Parse(os.Args[2:])
 	c, e := config.Load(*cp)
 	if e != nil {
@@ -74,6 +76,12 @@ func main() {
 			log.Fatal(e)
 		}
 		defer h.Close()
+		m, e := mux.New(h, pool.Masked().Addr().Next(), inv.Targets, leases, s.DatapathProfiles())
+		if e != nil {
+			log.Fatal(e)
+		}
+		m.Debug = *debugPackets
+		m.Run(context.Background())
 	}
 	if *dnsListen != "" {
 		dnsServer := dnsmux.New(inv.Targets, leases, s.QueryDNS)

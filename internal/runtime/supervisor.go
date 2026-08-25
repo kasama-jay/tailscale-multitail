@@ -215,6 +215,30 @@ func (s *Supervisor) Inventory() inventory.Snapshot {
 // EffectiveLeases deterministically allocates the current direct targets.
 // SQLite persistence and CIDR-change reconciliation are added with the host
 // datapath; deterministic keys preserve addresses for an unchanged inventory.
+type DatapathProfile struct {
+	ID       string
+	SelfIPv4 netip.Addr
+	Tun      *packettun.Device
+}
+
+func (s *Supervisor) DatapathProfiles() []DatapathProfile {
+	out := make([]DatapathProfile, 0, len(s.profiles))
+	for _, p := range s.profiles {
+		p.mu.RLock()
+		var ip netip.Addr
+		for _, x := range p.status.IPs {
+			if x.Is4() {
+				ip = x
+				break
+			}
+		}
+		p.mu.RUnlock()
+		if ip.IsValid() {
+			out = append(out, DatapathProfile{ID: p.cfg.ID, SelfIPv4: ip, Tun: p.tun})
+		}
+	}
+	return out
+}
 func (s *Supervisor) QueryDNS(ctx context.Context, profileID, name, qtype string) ([]byte, error) {
 	for _, p := range s.profiles {
 		if p.cfg.ID == profileID {

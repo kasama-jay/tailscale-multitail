@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 
+	"github.com/tailscale/wireguard-go/device"
 	"github.com/tailscale/wireguard-go/tun"
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
@@ -127,6 +128,26 @@ func (d *Device) AddTargets(ips []netip.Addr) error {
 }
 func netipToIPNet(p netip.Prefix) *net.IPNet {
 	return &net.IPNet{IP: net.IP(p.Addr().AsSlice()), Mask: net.CIDRMask(p.Bits(), 32)}
+}
+func (d *Device) ReadPacket(buf []byte) ([]byte, error) {
+	if len(buf) < device.MessageTransportHeaderSize+1 {
+		return nil, fmt.Errorf("host TUN buffer too short")
+	}
+	sizes := make([]int, 1)
+	n, err := d.Tun.Read([][]byte{buf}, sizes, device.MessageTransportHeaderSize)
+	if err != nil {
+		return nil, err
+	}
+	if n != 1 {
+		return nil, fmt.Errorf("unexpected host TUN batch %d", n)
+	}
+	return append([]byte(nil), buf[device.MessageTransportHeaderSize:device.MessageTransportHeaderSize+sizes[0]]...), nil
+}
+func (d *Device) WritePacket(p []byte) error {
+	buf := make([]byte, device.MessageTransportHeaderSize+len(p))
+	copy(buf[device.MessageTransportHeaderSize:], p)
+	_, err := d.Tun.Write([][]byte{buf}, device.MessageTransportHeaderSize)
+	return err
 }
 func (d *Device) Close() error {
 	for i := len(d.routes) - 1; i >= 0; i-- {
