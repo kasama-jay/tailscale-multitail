@@ -1,0 +1,6 @@
+# Locally built release artifacts.
+dist/
+
+ts-auth-jay
+
+ts-auth-jay-2
