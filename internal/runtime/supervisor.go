@@ -62,12 +62,12 @@ func New(cfg config.Config, stateRoot string) (*Supervisor, error) {
 	if stateRoot == "" {
 		stateRoot = config.DefaultStateRoot
 	}
-	store, changed, err := state.Open(stateRoot, cfg.EffectiveIPv4CIDR)
+	store, changed, err := state.OpenRecovering(stateRoot, cfg.EffectiveIPv4CIDR)
 	if err != nil {
 		return nil, fmt.Errorf("open runtime state: %w", err)
 	}
 	if changed {
-		log.Printf("effective IPv4 CIDR changed; previous leases were flushed")
+		log.Printf("runtime state was reset (CIDR change or database recovery); effective leases may have changed")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Supervisor{cfg: cfg, stateRoot: stateRoot, ctx: ctx, cancel: cancel, store: store, changes: make(chan struct{}, 1)}, nil
@@ -137,6 +137,10 @@ func (p *profile) refresh() error {
 	st, err := lc.Status(context.Background())
 	if err != nil {
 		return err
+	}
+	if st.BackendState != "Running" {
+		p.setStatusAndTargets(st, nil, "")
+		return nil
 	}
 	services, err := lc.GetServices(context.Background())
 	if err != nil {
@@ -239,6 +243,46 @@ func (s *Supervisor) notify() {
 	default:
 	}
 }
+func (s *Supervisor) ValidateDNSSuffixes() error {
+	owner := map[string]string{}
+	for _, p := range s.profiles {
+		p.mu.RLock()
+		n := p.status.DNSName
+		running := p.status.State == "Running"
+		p.mu.RUnlock()
+		if !running {
+			continue
+		}
+		parts := strings.SplitN(strings.TrimSuffix(n, "."), ".", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		if prior, ok := owner[parts[1]]; ok && prior != p.cfg.ID {
+			return fmt.Errorf("duplicate active MagicDNS suffix %q on profiles %q and %q", parts[1], prior, p.cfg.ID)
+		}
+		owner[parts[1]] = p.cfg.ID
+	}
+	return nil
+}
+func (s *Supervisor) DNSSuffixes() []string {
+	out := []string{}
+	seen := map[string]bool{}
+	for _, p := range s.profiles {
+		p.mu.RLock()
+		n := p.status.DNSName
+		running := p.status.State == "Running"
+		p.mu.RUnlock()
+		if !running {
+			continue
+		}
+		parts := strings.SplitN(strings.TrimSuffix(n, "."), ".", 2)
+		if len(parts) == 2 && !seen[parts[1]] {
+			seen[parts[1]] = true
+			out = append(out, parts[1])
+		}
+	}
+	return out
+}
 func (s *Supervisor) Status() []ProfileStatus {
 	out := make([]ProfileStatus, 0, len(s.profiles))
 	for _, p := range s.profiles {
@@ -288,6 +332,93 @@ func (s *Supervisor) DatapathProfiles() []DatapathProfile {
 		}
 	}
 	return out
+}
+func (s *Supervisor) profileByName(name string) *profile {
+	for _, p := range s.profiles {
+		if strings.EqualFold(p.cfg.Name, name) {
+			return p
+		}
+	}
+	return nil
+}
+func (s *Supervisor) Login(ctx context.Context, name, authKey string) (string, error) {
+	p := s.profileByName(name)
+	if p == nil {
+		return "", fmt.Errorf("unknown profile %q", name)
+	}
+	lc, e := p.server.LocalClient()
+	if e != nil {
+		return "", e
+	}
+	if authKey != "" {
+		prefs, e := lc.GetPrefs(ctx)
+		if e != nil {
+			return "", e
+		}
+		prefs.WantRunning = true
+		prefs.LoggedOut = false
+		prefs.RouteAll = false
+		prefs.ExitNodeID = ""
+		prefs.ExitNodeIP = netip.Addr{}
+		prefs.RunSSH = false
+		prefs.RunWebClient = false
+		if e = lc.Start(ctx, ipn.Options{AuthKey: authKey, UpdatePrefs: prefs}); e != nil {
+			return "", e
+		}
+		if e = lc.StartLoginInteractive(ctx); e != nil {
+			return "", e
+		}
+		authKey = ""
+		deadline := time.NewTicker(250 * time.Millisecond)
+		defer deadline.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return "", ctx.Err()
+			case <-deadline.C:
+				st, e := lc.Status(ctx)
+				if e == nil && st.BackendState == "Running" {
+					_ = p.refresh()
+					return "", nil
+				}
+			}
+		}
+	}
+	w, e := lc.WatchIPNBus(ctx, ipn.NotifyInitialState)
+	if e != nil {
+		return "", e
+	}
+	defer w.Close()
+	if e = lc.StartLoginInteractive(ctx); e != nil {
+		return "", e
+	}
+	for {
+		n, e := w.Next()
+		if e != nil {
+			return "", e
+		}
+		if n.BrowseToURL != nil {
+			return *n.BrowseToURL, nil
+		}
+	}
+}
+func (s *Supervisor) Logout(ctx context.Context, name string) error {
+	p := s.profileByName(name)
+	if p == nil {
+		return fmt.Errorf("unknown profile %q", name)
+	}
+	lc, e := p.server.LocalClient()
+	if e != nil {
+		return e
+	}
+	if e = lc.Logout(ctx); e != nil {
+		return e
+	}
+	p.degrade("explicitly logged out")
+	p.mu.Lock()
+	p.status.State = "NeedsLogin"
+	p.mu.Unlock()
+	return nil
 }
 func (s *Supervisor) QueryDNS(ctx context.Context, profileID, name, qtype string) ([]byte, error) {
 	for _, p := range s.profiles {

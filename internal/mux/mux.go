@@ -13,6 +13,7 @@ import (
 	"log"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -22,17 +23,42 @@ type Binding struct {
 	Self      netip.Addr
 	Tun       *packettun.Device
 }
+type flowState struct {
+	seen  time.Time
+	proto byte
+}
+type Stats struct {
+	HostPackets        uint64 `json:"host_packets"`
+	ProfilePackets     uint64 `json:"profile_packets"`
+	Drops              uint64 `json:"drops"`
+	FlowLimitDrops     uint64 `json:"flow_limit_drops"`
+	FragmentLimitDrops uint64 `json:"fragment_limit_drops"`
+	Flows              int    `json:"flows"`
+	Fragments          int    `json:"fragments"`
+}
+type fragmentState struct {
+	raw     bool
+	binding Binding
+	seen    time.Time
+}
 type Engine struct {
-	host        *hosttun.Device
-	Debug       bool
-	nat         netip.Addr
-	byEffective map[netip.Addr]Binding
-	byInbound   map[string]Binding
-	raw         map[netip.Addr]Binding
-	flows       map[string]time.Time
-	flowMu      sync.Mutex
-	bindingsMu  sync.RWMutex
-	wg          sync.WaitGroup
+	host               *hosttun.Device
+	Debug              bool
+	nat                netip.Addr
+	byEffective        map[netip.Addr]Binding
+	byInbound          map[string]Binding
+	raw                map[netip.Addr]Binding
+	flows              map[string]flowState
+	flowMu             sync.Mutex
+	bindingsMu         sync.RWMutex
+	fragments          map[string]fragmentState
+	fragmentMu         sync.Mutex
+	hostPackets        atomic.Uint64
+	profilePackets     atomic.Uint64
+	drops              atomic.Uint64
+	flowLimitDrops     atomic.Uint64
+	fragmentLimitDrops atomic.Uint64
+	wg                 sync.WaitGroup
 }
 
 func New(h *hosttun.Device, nat netip.Addr, targets []inventory.Target, leases map[string]netip.Addr, profiles []runtime.DatapathProfile) (*Engine, error) {
@@ -40,7 +66,7 @@ func New(h *hosttun.Device, nat netip.Addr, targets []inventory.Target, leases m
 	for _, p := range profiles {
 		self[p.ID] = p
 	}
-	e := &Engine{host: h, nat: nat, byEffective: map[netip.Addr]Binding{}, byInbound: map[string]Binding{}, raw: map[netip.Addr]Binding{}, flows: map[string]time.Time{}}
+	e := &Engine{host: h, nat: nat, byEffective: map[netip.Addr]Binding{}, byInbound: map[string]Binding{}, raw: map[netip.Addr]Binding{}, flows: map[string]flowState{}, fragments: map[string]fragmentState{}}
 	for _, t := range targets {
 		p, ok := self[t.ProfileID]
 		ip := leases[inventory.Key(t)]
@@ -90,6 +116,7 @@ func (e *Engine) hostLoop(ctx context.Context) {
 		if err != nil {
 			return
 		}
+		e.hostPackets.Add(1)
 		src, dst, proto, err := ipv4(p)
 		if err != nil || src != e.nat {
 			e.trace("host drop src=%s dst=%s err=%v", src, dst, err)
@@ -106,7 +133,8 @@ func (e *Engine) hostLoop(ctx context.Context) {
 			e.trace("host drop unmatched dst=%s", dst)
 			continue
 		}
-		if raw && !e.addFlow(flowKey(b.Target.ProfileID, p, false), proto) {
+		offset, _ := fragmentBits(p)
+		if raw && offset == 0 && !e.addFlow(flowKey(b.Target.ProfileID, p, false), proto) {
 			e.trace("host raw flow table full")
 			continue
 		}
@@ -124,12 +152,34 @@ func (e *Engine) profileLoop(ctx context.Context, t *packettun.Device, pid strin
 		if err != nil {
 			return
 		}
+		e.profilePackets.Add(1)
 		src, dst, proto, err := ipv4(p)
 		if err != nil || dst != self {
 			e.trace("profile=%s drop src=%s dst=%s err=%v", pid, src, dst, err)
 			continue
 		}
+		offset, mf := fragmentBits(p)
+		if offset > 0 {
+			fs, ok := e.getFragment(fragmentKey(pid, p))
+			if !ok {
+				e.trace("profile=%s drop unassociated fragment", pid)
+				continue
+			}
+			if fs.raw {
+				if err := rewrite(p, src, e.nat, proto); err == nil {
+					_ = e.host.WritePacket(p)
+				}
+			} else {
+				if err := rewrite(p, fs.binding.Effective, e.nat, proto); err == nil {
+					_ = e.host.WritePacket(p)
+				}
+			}
+			continue
+		}
 		if e.touchFlow(flowKey(pid, p, true), proto) {
+			if mf {
+				e.putFragment(fragmentKey(pid, p), fragmentState{raw: true, seen: time.Now()})
+			}
 			if err := rewrite(p, src, e.nat, proto); err == nil {
 				e.trace("profile=%s raw return %s", pid, src)
 				if err := e.host.WritePacket(p); err != nil {
@@ -144,6 +194,9 @@ func (e *Engine) profileLoop(ctx context.Context, t *packettun.Device, pid strin
 		if !ok {
 			e.trace("profile=%s drop unknown source=%s", pid, src)
 			continue
+		}
+		if mf {
+			e.putFragment(fragmentKey(pid, p), fragmentState{binding: b, seen: time.Now()})
 		}
 		if err := rewrite(p, b.Effective, e.nat, proto); err == nil {
 			e.trace("profile=%s return %s -> %s", pid, src, dst)
@@ -205,14 +258,15 @@ func (e *Engine) addFlow(k string, proto byte) bool {
 	defer e.flowMu.Unlock()
 	now := time.Now()
 	for x, t := range e.flows {
-		if now.Sub(t) > flowTimeout(proto) {
+		if now.Sub(t.seen) > flowTimeout(t.proto) {
 			delete(e.flows, x)
 		}
 	}
 	if len(e.flows) >= 65536 {
+		e.flowLimitDrops.Add(1)
 		return false
 	}
-	e.flows[k] = now
+	e.flows[k] = flowState{now, proto}
 	return true
 }
 func (e *Engine) touchFlow(k string, proto byte) bool {
@@ -222,12 +276,65 @@ func (e *Engine) touchFlow(k string, proto byte) bool {
 	e.flowMu.Lock()
 	defer e.flowMu.Unlock()
 	t, ok := e.flows[k]
-	if !ok || time.Since(t) > flowTimeout(proto) {
+	if !ok || time.Since(t.seen) > flowTimeout(t.proto) {
 		delete(e.flows, k)
 		return false
 	}
-	e.flows[k] = time.Now()
+	e.flows[k] = flowState{time.Now(), proto}
 	return true
+}
+func fragmentBits(p []byte) (uint16, bool) {
+	if len(p) < 8 {
+		return 0, false
+	}
+	v := binary.BigEndian.Uint16(p[6:8])
+	return v & 0x1fff, v&0x2000 != 0
+}
+func fragmentKey(pid string, p []byte) string {
+	if len(p) < 20 {
+		return ""
+	}
+	return fmt.Sprintf("%s/%d/%x/%x/%d", pid, p[9], p[12:16], p[16:20], binary.BigEndian.Uint16(p[4:6]))
+}
+func (e *Engine) putFragment(k string, v fragmentState) {
+	if k == "" {
+		return
+	}
+	e.fragmentMu.Lock()
+	defer e.fragmentMu.Unlock()
+	now := time.Now()
+	for x, s := range e.fragments {
+		if now.Sub(s.seen) > 30*time.Second {
+			delete(e.fragments, x)
+		}
+	}
+	if len(e.fragments) >= 8192 {
+		e.fragmentLimitDrops.Add(1)
+		return
+	}
+	v.seen = now
+	e.fragments[k] = v
+}
+func (e *Engine) getFragment(k string) (fragmentState, bool) {
+	e.fragmentMu.Lock()
+	defer e.fragmentMu.Unlock()
+	v, ok := e.fragments[k]
+	if !ok || time.Since(v.seen) > 30*time.Second {
+		delete(e.fragments, k)
+		return fragmentState{}, false
+	}
+	v.seen = time.Now()
+	e.fragments[k] = v
+	return v, true
+}
+func (e *Engine) Stats() Stats {
+	e.flowMu.Lock()
+	flows := len(e.flows)
+	e.flowMu.Unlock()
+	e.fragmentMu.Lock()
+	frags := len(e.fragments)
+	e.fragmentMu.Unlock()
+	return Stats{e.hostPackets.Load(), e.profilePackets.Load(), e.drops.Load(), e.flowLimitDrops.Load(), e.fragmentLimitDrops.Load(), flows, frags}
 }
 func ipv4(p []byte) (netip.Addr, netip.Addr, byte, error) {
 	if len(p) < 20 || p[0]>>4 != 4 {
@@ -237,9 +344,6 @@ func ipv4(p []byte) (netip.Addr, netip.Addr, byte, error) {
 	if n < 20 || len(p) < n {
 		return netip.Addr{}, netip.Addr{}, 0, fmt.Errorf("invalid header")
 	}
-	if binary.BigEndian.Uint16(p[6:8])&0x3fff != 0 {
-		return netip.Addr{}, netip.Addr{}, 0, fmt.Errorf("fragmented packet unsupported")
-	}
 	return netip.AddrFrom4([4]byte(p[12:16])), netip.AddrFrom4([4]byte(p[16:20])), p[9], nil
 }
 func rewrite(p []byte, src, dst netip.Addr, proto byte) error {
@@ -247,10 +351,31 @@ func rewrite(p []byte, src, dst netip.Addr, proto byte) error {
 	if len(p) < n {
 		return fmt.Errorf("short")
 	}
+	oldSrc := append([]byte(nil), p[12:16]...)
+	oldDst := append([]byte(nil), p[16:20]...)
 	copy(p[12:16], src.AsSlice())
 	copy(p[16:20], dst.AsSlice())
 	p[10], p[11] = 0, 0
 	binary.BigEndian.PutUint16(p[10:12], sum(p[:n]))
+	offset, mf := fragmentBits(p)
+	if offset > 0 {
+		return nil
+	}
+	if mf && (proto == 6 || proto == 17) {
+		off := n + 16
+		if proto == 17 {
+			off = n + 6
+		}
+		if len(p) < off+2 {
+			return fmt.Errorf("short fragmented transport")
+		}
+		old := binary.BigEndian.Uint16(p[off : off+2])
+		binary.BigEndian.PutUint16(p[off:off+2], adjustChecksum(old, append(oldSrc, oldDst...), append(src.AsSlice(), dst.AsSlice()...)))
+		return nil
+	}
+	if mf && proto == 1 {
+		return nil
+	}
 	if proto == 1 {
 		if len(p) < n+4 {
 			return fmt.Errorf("short icmp")
@@ -281,6 +406,16 @@ func rewrite(p []byte, src, dst netip.Addr, proto byte) error {
 		binary.BigEndian.PutUint16(p[off:off+2], c)
 	}
 	return nil
+}
+func adjustChecksum(old uint16, oldWords, newWords []byte) uint16 {
+	s := uint32(^old)
+	for i := 0; i+1 < len(oldWords); i += 2 {
+		s += uint32(^binary.BigEndian.Uint16(oldWords[i:i+2])) + uint32(binary.BigEndian.Uint16(newWords[i:i+2]))
+		for s>>16 != 0 {
+			s = (s & 0xffff) + (s >> 16)
+		}
+	}
+	return ^uint16(s)
 }
 func sum(p []byte) uint16 {
 	var s uint32

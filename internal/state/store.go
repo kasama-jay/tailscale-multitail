@@ -7,9 +7,29 @@ import (
 	_ "modernc.org/sqlite"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 type Store struct{ db *sql.DB }
+
+func OpenRecovering(root, cidr string) (*Store, bool, error) {
+	s, ch, e := Open(root, cidr)
+	if e == nil {
+		return s, ch, nil
+	}
+	stamp := time.Now().UTC().Format("20060102T150405Z")
+	for _, x := range []string{"runtime.db", "runtime.db-wal", "runtime.db-shm"} {
+		p := filepath.Join(root, x)
+		if _, xerr := os.Stat(p); xerr == nil {
+			_ = os.Rename(p, p+".corrupt-"+stamp)
+		}
+	}
+	s, _, e2 := Open(root, cidr)
+	if e2 != nil {
+		return nil, false, fmt.Errorf("runtime database corrupt (%v) and recreation failed: %w", e, e2)
+	}
+	return s, true, nil
+}
 
 func Open(root, cidr string) (*Store, bool, error) {
 	if e := os.MkdirAll(root, 0700); e != nil {

@@ -1,97 +1,86 @@
 # tailscale-multitail
 
-This branch implements the **Milestone 0.5 feasibility gate**, rather than a
-privileged host daemon. It pins upstream `tailscale.com` and supplies a bounded
-channel-backed `tun.Device` suitable for placing a packet mux in front of each
-embedded `tsnet.Server`.
+Linux daemon that connects one host to multiple Tailscale tailnets using one
+upstream `tsnet.Server` per profile, one host TUN, merged MagicDNS, synthetic
+effective IPv4 addresses, and ordered raw-canonical IPv4 routing.
 
-## Build
+> v1 replaces normal host-wide `tailscaled`. Stop and disable `tailscaled`
+> before starting this daemon.
 
-Build the Linux amd64 feasibility binary with its release version embedded:
-
-```sh
-make release VERSION=0.5.0
-./dist/tailscale-multitail-feasibility_0.5.0_linux_amd64 --version
-```
-
-## Checks
+## Build and test
 
 ```sh
 go test ./...
+make release-v1 V1_VERSION=1.0.0
 ```
 
-The real-tailnet feasibility check is deliberately opt-in. It creates two
-short-lived nodes with separate state directories, injects IPv4 ICMP packets
-into each custom TUN, and verifies that they emerge from the remote profile's
-custom TUN. It verifies `LocalClient.Status` peer inventory (stable ID,
-canonical IP, and MagicDNS name), `QueryDNS`, `GetServices`, and a
-`WatchIPNBus` peer-add event. `GetServices` validates the supported inventory
-API; an actual Service advertisement additionally needs a tagged node and
-Tailscale service-policy approval.
+Artifacts are written under `dist/tailscale-multitail_1.0.0_linux_amd64/`.
+The pinned upstream version is recorded in `go.mod`.
 
-To test a packet originating from a physically separate node, supply the
-IPv4 Tailscale address of a normal node in the **same** test tailnet. That
-node must permit and answer ICMP:
+## Install
+
+Create the management group, install the binaries/unit, and initialize config:
 
 ```sh
-./tailscale-multitail-feasibility --external-peer 100.x.y.z
+sudo groupadd --system tsmultitail
+sudo usermod -aG tsmultitail "$USER"
+sudo install -m755 tailscale-multitaild tsmultitail /usr/bin/
+sudo install -m644 tailscale-multitail.service /etc/systemd/system/
+sudo tsmultitail config init
+sudo tsmultitail profiles add work --hostname myhost-work
+sudo tsmultitail profiles add home --hostname myhost-home
+sudo systemctl daemon-reload
+sudo systemctl enable --now tailscale-multitail
 ```
 
-To validate DNS isolation and Services inventory across two tailnets, set
-`TSMULTITAIL_TEST_AUTHKEY_OTHER` to a reusable auth key from a different
-MagicDNS tailnet and provide a normal ICMP-capable node plus a known Service
-in that other tailnet:
+Authenticate a running profile without placing a key in argv or a file:
 
 ```sh
-TSMULTITAIL_TEST_AUTHKEY_A='…' \
-TSMULTITAIL_TEST_AUTHKEY_B='…' \
-TSMULTITAIL_TEST_AUTHKEY_OTHER='…' \
-./tailscale-multitail-feasibility \
-  --other-external-peer 100.x.y.z \
-  --service-fqdn service.example.ts.net \
-  --service-ip 100.x.y.z
+read -rsp 'Auth key: ' KEY; echo
+printf '%s' "$KEY" | sudo tsmultitail profiles login work --auth-key-stdin
+unset KEY
 ```
 
-The gate queries the Service name through the other profile and confirms the
-public `GetServices` inventory reports the expected IPv4 Service address. It
-does not issue an HTTP request through `tsnet.HTTPClient`: with a custom TUN,
-that client has no host-side mux/netstack loop to return response packets yet.
+Interactive login is also supported; omit `--auth-key-stdin` and open the
+returned URL. Profile order controls raw canonical-IP first-match selection.
+Config changes are atomically written through the authenticated control socket
+while the daemon runs and take effect after:
 
 ```sh
-TSMULTITAIL_TEST_AUTHKEY_A='tskey-auth-…' \
-TSMULTITAIL_TEST_AUTHKEY_B='tskey-auth-…' \
-./dist/tailscale-multitail-feasibility_0.5.0_linux_amd64
-
-# Or run the same gate through Go's integration test:
-TSMULTITAIL_TEST_AUTHKEY_A='tskey-auth-…' \
-TSMULTITAIL_TEST_AUTHKEY_B='tskey-auth-…' \
-go test -tags=integration -v ./integration
+tsmultitail daemon restart
 ```
 
-Use distinct, reusable, ephemeral-node auth keys from isolated test
-tailnets. Do not put keys in source control or shell history. The test
-tailnets must allow the requested ICMP traffic.
-
-## Milestone 1 runtime skeleton
-
-`tailscale-multitaild` starts one upstream `tsnet.Server` per configured
-profile, each with its derived state directory and a channel-backed internal
-TUN. It reads enrollment keys only from
-`TAILSCALE_AUTH_KEY_<UPPERCASE_PROFILE_NAME>`; it never writes keys to config
-or runtime status.
-
-For an unprivileged test run, use explicit temporary config and state paths:
+Useful checks:
 
 ```sh
-tailscale-multitaild run --config /tmp/config.yaml --state-root /tmp/state --once
+tsmultitail validate
+tsmultitail doctor
+tsmultitail status
 ```
 
-`--once` starts the configured profiles, prints their LocalAPI-derived status
-and the ordered aggregate peer/Service inventory as JSON, then exits. The
-aggregate preserves canonical-IP collisions and implements v1's ordered
-first-match raw-IP selection policy.
+## Runtime behavior
 
-With `--host-tun`, the daemon's effective-IP mux rewrites IPv4 TCP, UDP, and
-ICMP packets between `multitail0` and the selected profile TUN. It currently
-supports only unfragmented IPv4 packets; bounded fragmentation, raw-canonical
-flow conntrack, and the persistent lease database remain later work.
+- strict versioned YAML config at `/etc/tailscale-multitail/config.yaml`;
+- profile state and SQLite effective leases in
+  `/var/lib/tailscale-multitail/`;
+- root-owned, group-authorized control socket using `SO_PEERCRED`;
+- `multitail0`, routing table 552, and reserved rule priorities 5260–5269;
+- effective A/PTR records plus profile-scoped DNS forwarding through
+  systemd-resolved without claiming the default DNS route;
+- IPv4 TCP, UDP, ICMP, fragmented traffic, bounded flow/fragment state, and
+  fixed inter-profile forwarding denial;
+- live withdrawal/reconciliation when a profile stops running.
+
+Auth keys are accepted only from authorized stdin forwarding or profile
+environment variables and are never written to YAML, SQLite, or status output.
+`--debug-packets` is intended only for temporary diagnostics because it exposes
+network metadata in logs.
+
+See `PLAN.md`, `docs/architecture.md`, and `docs/command-line.md` for detailed
+semantics and security boundaries.
+
+## Milestone 0.5 feasibility harness
+
+The historical custom-TUN/LocalAPI gate remains available as
+`tailscale-multitail-feasibility`. It is opt-in and requires disposable test
+keys; see `docs/milestone_0.5_results.md` and the `milestone-0.5` branch.

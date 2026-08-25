@@ -52,10 +52,19 @@ func (s *Server) Update(targets []inventory.Target, effective map[string]netip.A
 }
 func (s *Server) Start(addr string) error {
 	h := dns.HandlerFunc(s.ServeDNS)
-	s.udp = &dns.Server{Addr: addr, Net: "udp", Handler: h}
-	s.tcp = &dns.Server{Addr: addr, Net: "tcp", Handler: h}
-	go s.udp.ListenAndServe()
-	go s.tcp.ListenAndServe()
+	pc, e := net.ListenPacket("udp", addr)
+	if e != nil {
+		return e
+	}
+	ln, e := net.Listen("tcp", addr)
+	if e != nil {
+		pc.Close()
+		return e
+	}
+	s.udp = &dns.Server{PacketConn: pc, Handler: h}
+	s.tcp = &dns.Server{Listener: ln, Handler: h}
+	go s.udp.ActivateAndServe()
+	go s.tcp.ActivateAndServe()
 	return nil
 }
 func (s *Server) Close() error {
@@ -75,6 +84,9 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	defer s.mu.RUnlock()
 	m := new(dns.Msg)
 	m.SetReply(r)
+	if r.IsEdns0() != nil {
+		m.SetEdns0(1232, false)
+	}
 	if len(r.Question) != 1 {
 		m.Rcode = dns.RcodeFormatError
 		w.WriteMsg(m)
@@ -91,6 +103,17 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 		if s.ptr(m, q, name) {
 			w.WriteMsg(m)
 			return
+		}
+		if pid := s.profileForPTR(name); pid != "" && s.query != nil {
+			b, e := s.query(context.Background(), pid, q.Name, "PTR")
+			if e == nil {
+				up := new(dns.Msg)
+				if up.Unpack(b) == nil {
+					up.Id = r.Id
+					w.WriteMsg(up)
+					return
+				}
+			}
 		}
 		m.Rcode = dns.RcodeNameError
 		w.WriteMsg(m)
@@ -147,6 +170,22 @@ func (s *Server) ptr(m *dns.Msg, q dns.Question, name string) bool {
 	}
 	return false
 }
+func (s *Server) profileForPTR(n string) string {
+	labels := strings.Split(strings.TrimSuffix(n, "."), ".")
+	if len(labels) != 6 || labels[4] != "in-addr" || labels[5] != "arpa" {
+		return ""
+	}
+	ip, e := netip.ParseAddr(strings.Join([]string{labels[3], labels[2], labels[1], labels[0]}, "."))
+	if e != nil {
+		return ""
+	}
+	for _, t := range s.targets {
+		if t.CanonicalIP == ip {
+			return t.ProfileID
+		}
+	}
+	return ""
+}
 func (s *Server) profileFor(n string) string {
 	for suffix, p := range s.suffix {
 		if strings.HasSuffix(n, suffix) {
@@ -156,7 +195,10 @@ func (s *Server) profileFor(n string) string {
 	return ""
 }
 func (s *Server) rewrite(m *dns.Msg) {
-	for _, rr := range m.Answer {
+	all := append([]dns.RR{}, m.Answer...)
+	all = append(all, m.Ns...)
+	all = append(all, m.Extra...)
+	for _, rr := range all {
 		if a, ok := rr.(*dns.A); ok {
 			ip, ok := netip.AddrFromSlice(a.A)
 			if !ok {

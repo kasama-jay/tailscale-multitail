@@ -1,10 +1,26 @@
 package state
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
 
+func TestCorruptDatabaseRecovery(t *testing.T) {
+	d := t.TempDir()
+	if e := os.WriteFile(filepath.Join(d, "runtime.db"), []byte("not sqlite"), 0600); e != nil {
+		t.Fatal(e)
+	}
+	s, reset, e := OpenRecovering(d, "10.192.0.0/16")
+	if e != nil || !reset {
+		t.Fatal(e, reset)
+	}
+	s.Close()
+	matches, _ := filepath.Glob(filepath.Join(d, "runtime.db.corrupt-*"))
+	if len(matches) != 1 {
+		t.Fatalf("corrupt backup missing: %v", matches)
+	}
+}
 func TestLeasePersistenceAndCIDRReset(t *testing.T) {
 	d := t.TempDir()
 	s, changed, e := Open(d, "10.192.0.0/16")

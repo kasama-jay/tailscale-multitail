@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"syscall"
 
 	"gopkg.in/yaml.v3"
 )
@@ -127,6 +128,18 @@ func (c Config) Marshal() ([]byte, error) {
 	return yaml.Marshal(c)
 }
 func WriteAtomic(path string, c Config) error {
+	if e := os.MkdirAll(filepath.Dir(path), 0755); e != nil {
+		return e
+	}
+	lock, e := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR, 0600)
+	if e != nil {
+		return e
+	}
+	defer lock.Close()
+	if e = syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); e != nil {
+		return e
+	}
+	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
 	if e := c.Validate(); e != nil {
 		return e
 	}

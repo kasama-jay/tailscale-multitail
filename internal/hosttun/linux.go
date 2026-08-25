@@ -48,8 +48,47 @@ func CheckNativeTailscale() error {
 	}
 	return nil
 }
+func CheckPoolOverlap(name string, table int, pool netip.Prefix) error {
+	links, e := netlink.LinkList()
+	if e != nil {
+		return e
+	}
+	for _, l := range links {
+		if l.Attrs().Name == name {
+			continue
+		}
+		aa, _ := netlink.AddrList(l, netlink.FAMILY_V4)
+		for _, a := range aa {
+			p, e := netip.ParsePrefix(a.IPNet.String())
+			if e == nil && (pool.Contains(p.Addr()) || p.Contains(pool.Addr())) {
+				return fmt.Errorf("effective pool %s overlaps address %s on %s", pool, p, l.Attrs().Name)
+			}
+		}
+	}
+	rr, e := netlink.RouteList(nil, netlink.FAMILY_V4)
+	if e != nil {
+		return e
+	}
+	for _, r := range rr {
+		ones := 0
+		if r.Dst != nil {
+			ones, _ = r.Dst.Mask.Size()
+		}
+		if r.Dst == nil || ones == 0 || r.Table == table {
+			continue
+		}
+		p, e := netip.ParsePrefix(r.Dst.String())
+		if e == nil && (pool.Contains(p.Addr()) || p.Contains(pool.Addr())) {
+			return fmt.Errorf("effective pool %s overlaps route %s table %d", pool, p, r.Table)
+		}
+	}
+	return nil
+}
 func Create(name string, mtu, table int, pool netip.Prefix) (*Device, error) {
 	if e := CheckNativeTailscale(); e != nil {
+		return nil, e
+	}
+	if e := CheckPoolOverlap(name, table, pool); e != nil {
 		return nil, e
 	}
 	if _, e := netlink.LinkByName(name); e == nil {
@@ -110,6 +149,7 @@ func (d *Device) setup(pool netip.Prefix) error {
 	}
 	return nil
 }
+func (d *Device) Index() int { return d.link.Attrs().Index }
 func (d *Device) ReconcileTargets(ips []netip.Addr) error {
 	for i := len(d.routes) - 1; i >= 0; i-- {
 		_ = netlink.RouteDel(&d.routes[i])
