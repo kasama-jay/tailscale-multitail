@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 
 	"github.com/jay/tailscale-multitail/internal/config"
+	"github.com/jay/tailscale-multitail/internal/control"
 )
 
 func die(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...); os.Exit(2) }
@@ -29,6 +31,17 @@ func configPath(args *[]string) string {
 func main() {
 	a := os.Args[1:]
 	p := configPath(&a)
+	socket := "/run/tailscale-multitail/control.sock"
+	for i := 0; i < len(a); i++ {
+		if a[i] == "--socket" {
+			if i+1 >= len(a) {
+				die("--socket needs a path")
+			}
+			socket = a[i+1]
+			a = append(a[:i], a[i+2:]...)
+			break
+		}
+	}
 	if len(a) == 0 {
 		die("usage: tsmultitail [--config PATH] {validate|example-config|config|profiles}")
 	}
@@ -48,6 +61,19 @@ func main() {
 		profilesCmd(p, a[1:])
 	case "doctor":
 		doctor(p)
+	case "status":
+		r, e := control.Client(socket, "status")
+		if e != nil {
+			die("status: %v", e)
+		}
+		json.NewEncoder(os.Stdout).Encode(r.Status)
+	case "daemon":
+		if len(a) != 2 || a[1] != "restart" {
+			die("usage: daemon restart")
+		}
+		if _, e := control.Client(socket, "restart"); e != nil {
+			die("restart: %v", e)
+		}
 	default:
 		die("unknown command %q", a[0])
 	}

@@ -10,10 +10,13 @@ import (
 	"net/netip"
 	"os"
 	"os/signal"
+	"os/user"
 	"path/filepath"
+	"strconv"
 	"syscall"
 
 	"github.com/jay/tailscale-multitail/internal/config"
+	"github.com/jay/tailscale-multitail/internal/control"
 	"github.com/jay/tailscale-multitail/internal/dnsmux"
 	"github.com/jay/tailscale-multitail/internal/hosttun"
 	"github.com/jay/tailscale-multitail/internal/mux"
@@ -33,6 +36,7 @@ func main() {
 	dnsListen := fs.String("dns-listen", "", "merged DNS listen address (test override; e.g. 127.0.0.1:1053)")
 	hostTUN := fs.Bool("host-tun", false, "create the Linux host TUN and target-specific routes")
 	debugPackets := fs.Bool("debug-packets", false, "temporarily log packet-mux decisions")
+	socketPath := fs.String("socket", "", "local privileged control socket path")
 	fs.Parse(os.Args[2:])
 	c, e := config.Load(*cp)
 	if e != nil {
@@ -104,9 +108,33 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	shutdown := make(chan struct{})
+	if *socketPath != "" {
+		gid := uint32(0)
+		if g, e := user.LookupGroup("tsmultitail"); e == nil {
+			if n, e := strconv.ParseUint(g.Gid, 10, 32); e == nil {
+				gid = uint32(n)
+			}
+		}
+		cs, e := control.Listen(*socketPath, gid, func() any {
+			i := s.Inventory()
+			l, _ := s.EffectiveLeases()
+			return struct {
+				Profiles any `json:"profiles"`
+				Targets  any `json:"targets"`
+				Leases   any `json:"effective_leases"`
+			}{s.Status(), i.Targets, l}
+		}, func() { close(shutdown) })
+		if e != nil {
+			log.Fatal(e)
+		}
+		defer cs.Close()
+	}
 	for {
 		select {
 		case <-ctx.Done():
+			return
+		case <-shutdown:
 			return
 		case <-s.Changes():
 			inv = s.Inventory()
