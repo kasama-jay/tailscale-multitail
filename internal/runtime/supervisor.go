@@ -13,9 +13,11 @@ import (
 	"time"
 
 	"github.com/jay/tailscale-multitail/internal/config"
+	"github.com/jay/tailscale-multitail/internal/inventory"
 	"github.com/jay/tailscale-multitail/internal/packettun"
 	"tailscale.com/ipn"
 	"tailscale.com/ipn/ipnstate"
+	"tailscale.com/tailcfg"
 	"tailscale.com/tsnet"
 )
 
@@ -31,11 +33,12 @@ type ProfileStatus struct {
 }
 
 type profile struct {
-	cfg    config.Profile
-	server *tsnet.Server
-	tun    *packettun.Device
-	mu     sync.RWMutex
-	status ProfileStatus
+	cfg     config.Profile
+	server  *tsnet.Server
+	tun     *packettun.Device
+	mu      sync.RWMutex
+	status  ProfileStatus
+	targets []inventory.Target
 }
 
 type Supervisor struct {
@@ -123,16 +126,36 @@ func (p *profile) refresh() error {
 	if err != nil {
 		return err
 	}
-	p.setStatus(st, "")
+	services, err := lc.GetServices(context.Background())
+	if err != nil {
+		return err
+	}
+	p.setStatusAndTargets(st, services, "")
 	return nil
 }
-func (p *profile) setStatus(st *ipnstate.Status, failure string) {
+func (p *profile) setStatusAndTargets(st *ipnstate.Status, services map[tailcfg.ServiceName]tailcfg.ServiceDetails, failure string) {
 	ps := ProfileStatus{ID: p.cfg.ID, Name: p.cfg.Name, Hostname: p.cfg.Hostname, State: st.BackendState, IPs: append([]netip.Addr(nil), st.TailscaleIPs...), PeerCount: len(st.Peer), Error: failure}
 	if st.Self != nil {
 		ps.DNSName = st.Self.DNSName
 	}
+	targets := make([]inventory.Target, 0, len(st.Peer)+len(services))
+	for _, peer := range st.Peer {
+		for _, ip := range peer.TailscaleIPs {
+			if ip.Is4() {
+				targets = append(targets, inventory.Target{Kind: inventory.Node, ID: string(peer.ID), FQDN: peer.DNSName, CanonicalIP: ip})
+			}
+		}
+	}
+	for name, svc := range services {
+		for _, ip := range svc.Addrs {
+			if ip.Is4() {
+				targets = append(targets, inventory.Target{Kind: inventory.Service, ID: name.String(), CanonicalIP: ip})
+			}
+		}
+	}
 	p.mu.Lock()
 	p.status = ps
+	p.targets = targets
 	p.mu.Unlock()
 }
 func (p *profile) watch(ctx context.Context) {
@@ -157,7 +180,7 @@ func (p *profile) watch(ctx context.Context) {
 			continue
 		}
 		if n.InitialStatus != nil {
-			p.setStatus(n.InitialStatus, "")
+			_ = p.refresh()
 			continue
 		}
 		if len(n.PeersChanged) > 0 || len(n.PeersRemoved) > 0 || n.State != nil || n.SelfChange != nil {
@@ -173,6 +196,19 @@ func (s *Supervisor) Status() []ProfileStatus {
 		p.mu.RUnlock()
 	}
 	return out
+}
+
+// Inventory returns an ordered, collision-preserving aggregate view. Raw
+// canonical address selection is performed by inventory.Snapshot.ResolveRaw.
+func (s *Supervisor) Inventory() inventory.Snapshot {
+	profiles := make([]inventory.Profile, 0, len(s.profiles))
+	for order, p := range s.profiles {
+		p.mu.RLock()
+		targets := append([]inventory.Target(nil), p.targets...)
+		p.mu.RUnlock()
+		profiles = append(profiles, inventory.Profile{ID: p.cfg.ID, Name: p.cfg.Name, Order: order, Targets: targets})
+	}
+	return inventory.Build(profiles)
 }
 func (s *Supervisor) Close() {
 	s.cancel()

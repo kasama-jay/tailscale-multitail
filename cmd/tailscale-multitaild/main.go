@@ -47,7 +47,12 @@ func main() {
 	}
 	defer s.Close()
 	if *once {
-		json.NewEncoder(os.Stdout).Encode(s.Status())
+		inv := s.Inventory()
+		json.NewEncoder(os.Stdout).Encode(struct {
+			Profiles   any `json:"profiles"`
+			Targets    any `json:"targets"`
+			Collisions any `json:"canonical_collisions"`
+		}{s.Status(), inv.Targets, inv.Collisions()})
 		return
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

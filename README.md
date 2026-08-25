@@ -87,5 +87,7 @@ tailscale-multitaild run --config /tmp/config.yaml --state-root /tmp/state --onc
 ```
 
 `--once` starts the configured profiles, prints their LocalAPI-derived status
-as JSON, then exits. Production host-TUN creation, routes, DNS, and address
-translation remain subsequent milestones.
+and the ordered aggregate peer/Service inventory as JSON, then exits. The
+aggregate preserves canonical-IP collisions and implements v1's ordered
+first-match raw-IP selection policy. Production host-TUN creation, routes,
+DNS, and address translation remain subsequent milestones.
