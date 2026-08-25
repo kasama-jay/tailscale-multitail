@@ -72,6 +72,20 @@ Use distinct, reusable, ephemeral-node auth keys from isolated test
 tailnets. Do not put keys in source control or shell history. The test
 tailnets must allow the requested ICMP traffic.
 
-The next implementation step is a profile wrapper which owns this device,
-`tsnet.Server`, and supported LocalAPI inventory watchers. Host TUN creation,
-routing, DNS, and address translation remain intentionally unimplemented.
+## Milestone 1 runtime skeleton
+
+`tailscale-multitaild` starts one upstream `tsnet.Server` per configured
+profile, each with its derived state directory and a channel-backed internal
+TUN. It reads enrollment keys only from
+`TAILSCALE_AUTH_KEY_<UPPERCASE_PROFILE_NAME>`; it never writes keys to config
+or runtime status.
+
+For an unprivileged test run, use explicit temporary config and state paths:
+
+```sh
+tailscale-multitaild run --config /tmp/config.yaml --state-root /tmp/state --once
+```
+
+`--once` starts the configured profiles, prints their LocalAPI-derived status
+as JSON, then exits. Production host-TUN creation, routes, DNS, and address
+translation remain subsequent milestones.
