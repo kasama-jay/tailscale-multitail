@@ -25,11 +25,14 @@ import (
 var version = "devel"
 
 func main() {
-	var stateDir, externalPeer string
+	var stateDir, externalPeer, otherExternalPeer, serviceFQDN, serviceIP string
 	var timeout time.Duration
 	var showVersion bool
 	flag.StringVar(&stateDir, "state-dir", "", "directory for temporary profile state; retained when specified")
-	flag.StringVar(&externalPeer, "external-peer", "", "IPv4 address of a separate normal Tailscale node to test the external inbound path")
+	flag.StringVar(&externalPeer, "external-peer", "", "IPv4 address of a separate normal Tailscale node in A/B's tailnet to test the external inbound path")
+	flag.StringVar(&otherExternalPeer, "other-external-peer", "", "IPv4 address of a separate normal Tailscale node in TSMULTITAIL_TEST_AUTHKEY_OTHER's tailnet")
+	flag.StringVar(&serviceFQDN, "service-fqdn", "", "Tailscale Service FQDN in TSMULTITAIL_TEST_AUTHKEY_OTHER's tailnet")
+	flag.StringVar(&serviceIP, "service-ip", "", "expected IPv4 Tailscale Service IP for --service-fqdn")
 	flag.DurationVar(&timeout, "timeout", 2*time.Minute, "overall feasibility-check timeout")
 	flag.BoolVar(&showVersion, "version", false, "print version and exit")
 	flag.Parse()
@@ -37,12 +40,12 @@ func main() {
 		fmt.Println(version)
 		return
 	}
-	if err := run(stateDir, externalPeer, timeout); err != nil {
+	if err := run(stateDir, externalPeer, otherExternalPeer, serviceFQDN, serviceIP, timeout); err != nil {
 		log.Fatal(err)
 	}
 }
 
-func run(stateDir, externalPeer string, timeout time.Duration) error {
+func run(stateDir, externalPeer, otherExternalPeer, serviceFQDN, serviceIP string, timeout time.Duration) error {
 	keyA, keyB := os.Getenv("TSMULTITAIL_TEST_AUTHKEY_A"), os.Getenv("TSMULTITAIL_TEST_AUTHKEY_B")
 	if keyA == "" || keyB == "" {
 		return errors.New("set TSMULTITAIL_TEST_AUTHKEY_A and TSMULTITAIL_TEST_AUTHKEY_B; keys are accepted only through the environment")
@@ -50,13 +53,24 @@ func run(stateDir, externalPeer string, timeout time.Duration) error {
 	if timeout <= 0 {
 		return errors.New("timeout must be positive")
 	}
-	var outside netip.Addr
-	if externalPeer != "" {
-		var err error
-		outside, err = netip.ParseAddr(externalPeer)
-		if err != nil || !outside.Is4() {
-			return fmt.Errorf("external-peer must be an IPv4 address: %q", externalPeer)
-		}
+	outside, err := parseIPv4Flag("external-peer", externalPeer)
+	if err != nil {
+		return err
+	}
+	otherOutside, err := parseIPv4Flag("other-external-peer", otherExternalPeer)
+	if err != nil {
+		return err
+	}
+	expectedServiceIP, err := parseIPv4Flag("service-ip", serviceIP)
+	if err != nil {
+		return err
+	}
+	if (serviceFQDN == "") != !expectedServiceIP.IsValid() {
+		return errors.New("service-fqdn and service-ip must be supplied together")
+	}
+	otherKey := os.Getenv("TSMULTITAIL_TEST_AUTHKEY_OTHER")
+	if (otherOutside.IsValid() || serviceFQDN != "") && otherKey == "" {
+		return errors.New("other-external-peer and service checks require TSMULTITAIL_TEST_AUTHKEY_OTHER")
 	}
 
 	removeState := false
@@ -146,6 +160,39 @@ func run(stateDir, externalPeer string, timeout time.Duration) error {
 	if outside.IsValid() {
 		msg += fmt.Sprintf("; external-node ICMP reply succeeded (%s)", outside)
 	}
+	if otherKey != "" {
+		c, tunC, err := start(ctx, filepath.Join(stateDir, "other"), "other", otherKey)
+		if err != nil {
+			return err
+		}
+		defer c.Close()
+		ipC, err := ipv4(c)
+		if err != nil {
+			return fmt.Errorf("other-tailnet profile: %w", err)
+		}
+		if otherOutside.IsValid() {
+			if err := tunC.Inject(echo(ipC, otherOutside, 0xcdef)); err != nil {
+				return fmt.Errorf("inject other profile -> external peer: %w", err)
+			}
+			if err := waitFor(ctx, tunC, otherOutside, ipC); err != nil {
+				return fmt.Errorf("other-tailnet external inbound path (%s -> %s): %w", otherOutside, ipC, err)
+			}
+			msg += fmt.Sprintf("; other-tailnet external-node ICMP reply succeeded (%s)", otherOutside)
+			fmt.Printf("external-node ICMP: %s replied to other profile %s\n", otherOutside, ipC)
+		}
+		otherStatus, err := checkOtherTailnet(ctx, c, expectedServiceIP, serviceFQDN)
+		if err != nil {
+			return fmt.Errorf("other-tailnet profile: %w", err)
+		}
+		aStatus, err := status(ctx, a)
+		if err != nil {
+			return fmt.Errorf("profile A Status: %w", err)
+		}
+		if aStatus.CurrentTailnet == nil || aStatus.CurrentTailnet.MagicDNSSuffix == otherStatus.CurrentTailnet.MagicDNSSuffix {
+			return errors.New("first and other profiles have the same or unavailable MagicDNS suffix")
+		}
+		msg += "; distinct-tailnet DNS scope succeeded"
+	}
 	fmt.Println(msg)
 	return nil
 }
@@ -231,6 +278,60 @@ func checkInventory(ctx context.Context, s *tsnet.Server, peerIP netip.Addr) err
 	}
 	fmt.Printf("inventory: peer=%s stable_id=%s dns=%s services=%d\n", peerIP, peer.ID, peer.DNSName, len(services))
 	return nil
+}
+
+func parseIPv4Flag(name, value string) (netip.Addr, error) {
+	if value == "" {
+		return netip.Addr{}, nil
+	}
+	ip, err := netip.ParseAddr(value)
+	if err != nil || !ip.Is4() {
+		return netip.Addr{}, fmt.Errorf("%s must be an IPv4 address: %q", name, value)
+	}
+	return ip, nil
+}
+
+// checkOtherTailnet verifies that the same supported LocalAPI calls work in a
+// different profile/tailnet and, when configured, that Services DNS and
+// inventory agree with the configured Service IP.
+func checkOtherTailnet(ctx context.Context, s *tsnet.Server, expectedServiceIP netip.Addr, serviceFQDN string) (*ipnstate.Status, error) {
+	lc, err := s.LocalClient()
+	if err != nil {
+		return nil, err
+	}
+	st, err := lc.Status(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("Status: %w", err)
+	}
+	if st.Self == nil || st.Self.DNSName == "" || st.CurrentTailnet == nil || st.CurrentTailnet.MagicDNSSuffix == "" {
+		return nil, errors.New("Status does not expose self MagicDNS inventory")
+	}
+	if _, _, err := lc.QueryDNS(ctx, st.Self.DNSName, "A"); err != nil {
+		return nil, fmt.Errorf("QueryDNS(%q, A): %w", st.Self.DNSName, err)
+	}
+	services, err := lc.GetServices(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("GetServices: %w", err)
+	}
+	if expectedServiceIP.IsValid() {
+		found := false
+		for name, details := range services {
+			for _, ip := range details.Addrs {
+				if ip == expectedServiceIP {
+					fmt.Printf("service inventory: name=%s ip=%s ports=%v\n", name, ip, details.Ports)
+					found = true
+				}
+			}
+		}
+		if !found {
+			return nil, fmt.Errorf("GetServices does not expose expected Service IP %s", expectedServiceIP)
+		}
+		if _, _, err := lc.QueryDNS(ctx, serviceFQDN, "A"); err != nil {
+			return nil, fmt.Errorf("QueryDNS(%q, A): %w", serviceFQDN, err)
+		}
+		fmt.Printf("service DNS: %s queried through other-tailnet profile\n", serviceFQDN)
+	}
+	return st, nil
 }
 
 func status(ctx context.Context, s *tsnet.Server) (*ipnstate.Status, error) {

@@ -37,6 +37,26 @@ node must permit and answer ICMP:
 ./tailscale-multitail-feasibility --external-peer 100.x.y.z
 ```
 
+To validate DNS isolation and Services inventory across two tailnets, set
+`TSMULTITAIL_TEST_AUTHKEY_OTHER` to a reusable auth key from a different
+MagicDNS tailnet and provide a normal ICMP-capable node plus a known Service
+in that other tailnet:
+
+```sh
+TSMULTITAIL_TEST_AUTHKEY_A='…' \
+TSMULTITAIL_TEST_AUTHKEY_B='…' \
+TSMULTITAIL_TEST_AUTHKEY_OTHER='…' \
+./tailscale-multitail-feasibility \
+  --other-external-peer 100.x.y.z \
+  --service-fqdn service.example.ts.net \
+  --service-ip 100.x.y.z
+```
+
+The gate queries the Service name through the other profile and confirms the
+public `GetServices` inventory reports the expected IPv4 Service address. It
+does not issue an HTTP request through `tsnet.HTTPClient`: with a custom TUN,
+that client has no host-side mux/netstack loop to return response packets yet.
+
 ```sh
 TSMULTITAIL_TEST_AUTHKEY_A='tskey-auth-…' \
 TSMULTITAIL_TEST_AUTHKEY_B='tskey-auth-…' \
@@ -48,9 +68,9 @@ TSMULTITAIL_TEST_AUTHKEY_B='tskey-auth-…' \
 go test -tags=integration -v ./integration
 ```
 
-Use distinct, reusable, ephemeral-node auth keys from an isolated test
-tailnet. Do not put keys in source control or shell history. The test tailnet
-ACL must allow ICMP between the two test nodes.
+Use distinct, reusable, ephemeral-node auth keys from isolated test
+tailnets. Do not put keys in source control or shell history. The test
+tailnets must allow the requested ICMP traffic.
 
 The next implementation step is a profile wrapper which owns this device,
 `tsnet.Server`, and supported LocalAPI inventory watchers. Host TUN creation,
