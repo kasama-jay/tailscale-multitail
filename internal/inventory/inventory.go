@@ -34,6 +34,10 @@ type Snapshot struct {
 	FQDN      map[string][]Target     `json:"-"`
 }
 
+func Key(t Target) string {
+	return t.ProfileID + "/" + string(t.Kind) + "/" + t.ID + "/" + t.CanonicalIP.String()
+}
+
 func Build(profiles []Profile) Snapshot {
 	s := Snapshot{Canonical: map[netip.Addr][]Target{}, FQDN: map[string][]Target{}}
 	for _, p := range profiles {

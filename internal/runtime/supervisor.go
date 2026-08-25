@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jay/tailscale-multitail/internal/allocator"
 	"github.com/jay/tailscale-multitail/internal/config"
 	"github.com/jay/tailscale-multitail/internal/inventory"
 	"github.com/jay/tailscale-multitail/internal/packettun"
@@ -209,6 +210,43 @@ func (s *Supervisor) Inventory() inventory.Snapshot {
 		profiles = append(profiles, inventory.Profile{ID: p.cfg.ID, Name: p.cfg.Name, Order: order, Targets: targets})
 	}
 	return inventory.Build(profiles)
+}
+
+// EffectiveLeases deterministically allocates the current direct targets.
+// SQLite persistence and CIDR-change reconciliation are added with the host
+// datapath; deterministic keys preserve addresses for an unchanged inventory.
+func (s *Supervisor) QueryDNS(ctx context.Context, profileID, name, qtype string) ([]byte, error) {
+	for _, p := range s.profiles {
+		if p.cfg.ID == profileID {
+			lc, err := p.server.LocalClient()
+			if err != nil {
+				return nil, err
+			}
+			b, _, err := lc.QueryDNS(ctx, name, qtype)
+			return b, err
+		}
+	}
+	return nil, fmt.Errorf("unknown profile %q", profileID)
+}
+func (s *Supervisor) EffectiveLeases() (map[string]netip.Addr, error) {
+	inv := s.Inventory()
+	a, err := allocator.New(s.cfg.EffectiveIPv4CIDR)
+	if err != nil {
+		return nil, err
+	}
+	keys := make([]string, 0, len(inv.Targets))
+	for _, t := range inv.Targets {
+		keys = append(keys, inventory.Key(t))
+	}
+	leases, err := a.Allocate(keys)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]netip.Addr, len(leases))
+	for _, l := range leases {
+		out[l.Key] = l.IP
+	}
+	return out, nil
 }
 func (s *Supervisor) Close() {
 	s.cancel()
