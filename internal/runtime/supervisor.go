@@ -151,10 +151,12 @@ func (p *profile) setStatusAndTargets(st *ipnstate.Status, services map[tailcfg.
 		ps.DNSName = st.Self.DNSName
 	}
 	targets := make([]inventory.Target, 0, len(st.Peer)+len(services))
-	for _, peer := range st.Peer {
-		for _, ip := range peer.TailscaleIPs {
-			if ip.Is4() {
-				targets = append(targets, inventory.Target{Kind: inventory.Node, ID: string(peer.ID), FQDN: peer.DNSName, CanonicalIP: ip})
+	if st.BackendState == "Running" {
+		for _, peer := range st.Peer {
+			for _, ip := range peer.TailscaleIPs {
+				if ip.Is4() {
+					targets = append(targets, inventory.Target{Kind: inventory.Node, ID: string(peer.ID), FQDN: peer.DNSName, CanonicalIP: ip})
+				}
 			}
 		}
 	}
@@ -165,6 +167,9 @@ func (p *profile) setStatusAndTargets(st *ipnstate.Status, services map[tailcfg.
 			}
 		}
 	}
+	if st.BackendState != "Running" {
+		targets = nil
+	}
 	p.mu.Lock()
 	p.status = ps
 	p.targets = targets
@@ -174,33 +179,57 @@ func (p *profile) setStatusAndTargets(st *ipnstate.Status, services map[tailcfg.
 	}
 }
 func (p *profile) watch(ctx context.Context) {
-	lc, err := p.server.LocalClient()
-	if err != nil {
-		return
-	}
-	w, err := lc.WatchIPNBus(ctx, ipn.NotifyInitialStatus|ipn.NotifyPeerChanges)
-	if err != nil {
-		return
-	}
-	defer w.Close()
-	for {
-		n, err := w.Next()
-		if err != nil {
+	backoff := time.Second
+	for ctx.Err() == nil {
+		lc, err := p.server.LocalClient()
+		if err == nil {
+			w, e := lc.WatchIPNBus(ctx, ipn.NotifyInitialStatus|ipn.NotifyPeerChanges)
+			if e == nil {
+				err = nil
+				for {
+					n, e := w.Next()
+					if e != nil {
+						err = e
+						break
+					}
+					if n.ErrMessage != nil {
+						p.degrade(*n.ErrMessage)
+						continue
+					}
+					if n.InitialStatus != nil {
+						_ = p.refresh()
+						continue
+					}
+					if len(n.PeersChanged) > 0 || len(n.PeersRemoved) > 0 || n.State != nil || n.SelfChange != nil {
+						_ = p.refresh()
+					}
+				}
+				w.Close()
+			}
+		}
+		if ctx.Err() != nil {
 			return
 		}
-		if n.ErrMessage != nil {
-			p.mu.Lock()
-			p.status.Error = *n.ErrMessage
-			p.mu.Unlock()
-			continue
+		p.degrade(fmt.Sprintf("LocalAPI watch unavailable: %v", err))
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(backoff):
 		}
-		if n.InitialStatus != nil {
-			_ = p.refresh()
-			continue
+		if backoff < time.Minute {
+			backoff *= 2
 		}
-		if len(n.PeersChanged) > 0 || len(n.PeersRemoved) > 0 || n.State != nil || n.SelfChange != nil {
-			_ = p.refresh()
-		}
+		_ = p.refresh()
+	}
+}
+func (p *profile) degrade(reason string) {
+	p.mu.Lock()
+	p.status.State = "Degraded"
+	p.status.Error = reason
+	p.targets = nil
+	p.mu.Unlock()
+	if p.onChange != nil {
+		p.onChange()
 	}
 }
 func (s *Supervisor) Changes() <-chan struct{} { return s.changes }
