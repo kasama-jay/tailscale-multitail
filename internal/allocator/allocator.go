@@ -25,6 +25,17 @@ func New(cidr string) (*Allocator, error) {
 	}
 	return &Allocator{p, map[string]netip.Addr{}, map[netip.Addr]string{}}, nil
 }
+func (a *Allocator) Reserve(key string, ip netip.Addr) error {
+	if !ip.Is4() || !a.prefix.Contains(ip) || ip == a.prefix.Masked().Addr().Next() || ip == a.prefix.Masked().Addr().Next().Next() {
+		return fmt.Errorf("invalid reserved effective IP %s", ip)
+	}
+	if old, ok := a.used[ip]; ok && old != key {
+		return fmt.Errorf("effective IP %s is already leased", ip)
+	}
+	a.used[ip] = key
+	a.leases[key] = ip
+	return nil
+}
 func (a *Allocator) Allocate(keys []string) ([]Lease, error) {
 	keys = append([]string(nil), keys...)
 	sort.Strings(keys)

@@ -16,6 +16,7 @@ import (
 	"github.com/jay/tailscale-multitail/internal/config"
 	"github.com/jay/tailscale-multitail/internal/inventory"
 	"github.com/jay/tailscale-multitail/internal/packettun"
+	"github.com/jay/tailscale-multitail/internal/state"
 	"tailscale.com/ipn"
 	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/tailcfg"
@@ -48,6 +49,7 @@ type Supervisor struct {
 	ctx       context.Context
 	cancel    context.CancelFunc
 	profiles  []*profile
+	store     *state.Store
 	wg        sync.WaitGroup
 }
 
@@ -58,8 +60,15 @@ func New(cfg config.Config, stateRoot string) (*Supervisor, error) {
 	if stateRoot == "" {
 		stateRoot = config.DefaultStateRoot
 	}
+	store, changed, err := state.Open(stateRoot, cfg.EffectiveIPv4CIDR)
+	if err != nil {
+		return nil, fmt.Errorf("open runtime state: %w", err)
+	}
+	if changed {
+		log.Printf("effective IPv4 CIDR changed; previous leases were flushed")
+	}
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Supervisor{cfg: cfg, stateRoot: stateRoot, ctx: ctx, cancel: cancel}, nil
+	return &Supervisor{cfg: cfg, stateRoot: stateRoot, ctx: ctx, cancel: cancel, store: store}, nil
 }
 
 // Start initializes every configured profile in config order. Auth keys are
@@ -258,6 +267,18 @@ func (s *Supervisor) EffectiveLeases() (map[string]netip.Addr, error) {
 	if err != nil {
 		return nil, err
 	}
+	persisted, err := s.store.Leases()
+	if err != nil {
+		return nil, err
+	}
+	for k, v := range persisted {
+		ip, e := netip.ParseAddr(v)
+		if e == nil {
+			if e = a.Reserve(k, ip); e != nil {
+				return nil, e
+			}
+		}
+	}
 	keys := make([]string, 0, len(inv.Targets))
 	for _, t := range inv.Targets {
 		keys = append(keys, inventory.Key(t))
@@ -269,6 +290,9 @@ func (s *Supervisor) EffectiveLeases() (map[string]netip.Addr, error) {
 	out := make(map[string]netip.Addr, len(leases))
 	for _, l := range leases {
 		out[l.Key] = l.IP
+		if err := s.store.Put(l.Key, l.IP.String()); err != nil {
+			return nil, err
+		}
 	}
 	return out, nil
 }
@@ -278,6 +302,9 @@ func (s *Supervisor) Close() {
 		_ = p.server.Close()
 	}
 	s.wg.Wait()
+	if s.store != nil {
+		_ = s.store.Close()
+	}
 }
 func AuthKeyEnv(name string) string   { return authKeyEnv(name) }
 func StateDir(root, id string) string { return filepath.Join(root, id) }
