@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
 	"os"
+	"os/exec"
 
 	"github.com/jay/tailscale-multitail/internal/config"
 )
@@ -44,6 +46,8 @@ func main() {
 		configCmd(p, a[1:])
 	case "profiles":
 		profilesCmd(p, a[1:])
+	case "doctor":
+		doctor(p)
 	default:
 		die("unknown command %q", a[0])
 	}
@@ -135,6 +139,34 @@ func profilesCmd(p string, a []string) {
 		fmt.Println(x.ID)
 	default:
 		die("unknown profiles command %q", a[0])
+	}
+}
+func doctor(path string) {
+	c, err := config.Load(path)
+	if err != nil {
+		die("config: %v", err)
+	}
+	fmt.Println("ok: strict configuration")
+	for _, p := range c.Profiles {
+		d := p.StateDir(config.DefaultStateRoot)
+		if st, e := os.Stat(d); e == nil && st.Mode().Perm()&0077 != 0 {
+			fmt.Printf("warn: %s permissions are %o (expected 0700)\n", d, st.Mode().Perm())
+		}
+	}
+	if b, e := os.ReadFile("/proc/sys/net/ipv4/conf/all/rp_filter"); e == nil && len(b) > 0 && b[0] != '0' {
+		fmt.Printf("warn: rp_filter=%c may block asymmetric multitail replies; set an appropriate loose/disabled policy\n", b[0])
+	} else {
+		fmt.Println("ok: global rp_filter is disabled")
+	}
+	if out, e := exec.Command("ip", "-o", "rule", "show").Output(); e == nil {
+		for _, l := range bytes.Split(out, []byte{'\n'}) {
+			if bytes.HasPrefix(l, []byte("526")) {
+				fmt.Printf("warn: reserved multitail ip-rule priority occupied: %s\n", l)
+			}
+		}
+	}
+	if _, e := os.Stat("/sys/class/net/tailscale0"); e == nil {
+		fmt.Println("warn: tailscale0 exists; v1 daemon will refuse to start")
 	}
 }
 func newID() string {
