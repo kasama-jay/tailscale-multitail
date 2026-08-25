@@ -5,6 +5,15 @@ privileged host daemon. It pins upstream `tailscale.com` and supplies a bounded
 channel-backed `tun.Device` suitable for placing a packet mux in front of each
 embedded `tsnet.Server`.
 
+## Build
+
+Build the Linux amd64 feasibility binary with its release version embedded:
+
+```sh
+make release VERSION=0.5.0
+./dist/tailscale-multitail-feasibility_0.5.0_linux_amd64 --version
+```
+
 ## Checks
 
 ```sh
@@ -18,6 +27,11 @@ custom TUN. It also exercises the supported `LocalClient.Status`, `QueryDNS`,
 and `WatchIPNBus` interfaces.
 
 ```sh
+TSMULTITAIL_TEST_AUTHKEY_A='tskey-auth-…' \
+TSMULTITAIL_TEST_AUTHKEY_B='tskey-auth-…' \
+./dist/tailscale-multitail-feasibility_0.5.0_linux_amd64
+
+# Or run the same gate through Go's integration test:
 TSMULTITAIL_TEST_AUTHKEY_A='tskey-auth-…' \
 TSMULTITAIL_TEST_AUTHKEY_B='tskey-auth-…' \
 go test -tags=integration -v ./integration
