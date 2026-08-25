@@ -14,8 +14,8 @@ go test ./...
 The real-tailnet feasibility check is deliberately opt-in. It creates two
 short-lived nodes with separate state directories, injects IPv4 ICMP packets
 into each custom TUN, and verifies that they emerge from the remote profile's
-custom TUN. It also exercises the supported `LocalClient.Status` and
-`WatchIPNBus` interfaces.
+custom TUN. It also exercises the supported `LocalClient.Status`, `QueryDNS`,
+and `WatchIPNBus` interfaces.
 
 ```sh
 TSMULTITAIL_TEST_AUTHKEY_A='tskey-auth-…' \
