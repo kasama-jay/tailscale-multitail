@@ -10,6 +10,7 @@ Type=simple
 ExecStart=/usr/bin/tailscale-multitaild run --host-tun --resolved --socket=/run/tailscale-multitail/control.sock
 Restart=on-failure
 RestartForceExitStatus=75
+RestartPreventExitStatus=1 2
 RestartSec=5s
 User=root
 Group=tsmultitail

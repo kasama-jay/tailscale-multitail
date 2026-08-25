@@ -48,6 +48,7 @@ type Engine struct {
 	byEffective        map[netip.Addr]Binding
 	byInbound          map[string]Binding
 	raw                map[netip.Addr]Binding
+	selfByProfile      map[string]netip.Addr
 	flows              map[string]flowState
 	flowMu             sync.Mutex
 	bindingsMu         sync.RWMutex
@@ -58,15 +59,20 @@ type Engine struct {
 	drops              atomic.Uint64
 	flowLimitDrops     atomic.Uint64
 	fragmentLimitDrops atomic.Uint64
+	profileMu          sync.Mutex
+	profileSeen        map[*packettun.Device]bool
+	profiles           []runtime.DatapathProfile
+	ctx                context.Context
 	wg                 sync.WaitGroup
 }
 
 func New(h *hosttun.Device, nat netip.Addr, targets []inventory.Target, leases map[string]netip.Addr, profiles []runtime.DatapathProfile) (*Engine, error) {
 	self := map[string]runtime.DatapathProfile{}
+	e := &Engine{host: h, nat: nat, byEffective: map[netip.Addr]Binding{}, byInbound: map[string]Binding{}, raw: map[netip.Addr]Binding{}, selfByProfile: map[string]netip.Addr{}, flows: map[string]flowState{}, fragments: map[string]fragmentState{}, profileSeen: map[*packettun.Device]bool{}, profiles: append([]runtime.DatapathProfile(nil), profiles...)}
 	for _, p := range profiles {
 		self[p.ID] = p
+		e.selfByProfile[p.ID] = p.SelfIPv4
 	}
-	e := &Engine{host: h, nat: nat, byEffective: map[netip.Addr]Binding{}, byInbound: map[string]Binding{}, raw: map[netip.Addr]Binding{}, flows: map[string]flowState{}, fragments: map[string]fragmentState{}}
 	for _, t := range targets {
 		p, ok := self[t.ProfileID]
 		ip := leases[inventory.Key(t)]
@@ -88,19 +94,29 @@ func (e *Engine) Update(targets []inventory.Target, leases map[string]netip.Addr
 	e.byEffective = n.byEffective
 	e.byInbound = n.byInbound
 	e.raw = n.raw
+	e.selfByProfile = n.selfByProfile
 	e.bindingsMu.Unlock()
+	e.ensureProfileLoops(profiles)
 }
 func (e *Engine) Run(ctx context.Context) {
+	e.ctx = ctx
 	e.wg.Add(1)
 	go func() { defer e.wg.Done(); e.hostLoop(ctx) }()
-	seen := map[*packettun.Device]bool{}
-	for _, b := range e.byEffective {
-		if seen[b.Tun] {
+	e.ensureProfileLoops(e.profiles)
+}
+func (e *Engine) ensureProfileLoops(profiles []runtime.DatapathProfile) {
+	e.profileMu.Lock()
+	defer e.profileMu.Unlock()
+	if e.ctx == nil {
+		return
+	}
+	for _, p := range profiles {
+		if e.profileSeen[p.Tun] {
 			continue
 		}
-		seen[b.Tun] = true
+		e.profileSeen[p.Tun] = true
 		e.wg.Add(1)
-		go func(b Binding) { defer e.wg.Done(); e.profileLoop(ctx, b.Tun, b.Target.ProfileID, b.Self) }(b)
+		go func(p runtime.DatapathProfile) { defer e.wg.Done(); e.profileLoop(e.ctx, p.Tun, p.ID) }(p)
 	}
 }
 func (e *Engine) Wait() { e.wg.Wait() }
@@ -146,7 +162,7 @@ func (e *Engine) hostLoop(ctx context.Context) {
 		}
 	}
 }
-func (e *Engine) profileLoop(ctx context.Context, t *packettun.Device, pid string, self netip.Addr) {
+func (e *Engine) profileLoop(ctx context.Context, t *packettun.Device, pid string) {
 	for {
 		p, err := t.Receive()
 		if err != nil {
@@ -154,6 +170,9 @@ func (e *Engine) profileLoop(ctx context.Context, t *packettun.Device, pid strin
 		}
 		e.profilePackets.Add(1)
 		src, dst, proto, err := ipv4(p)
+		e.bindingsMu.RLock()
+		self := e.selfByProfile[pid]
+		e.bindingsMu.RUnlock()
 		if err != nil || dst != self {
 			e.trace("profile=%s drop src=%s dst=%s err=%v", pid, src, dst, err)
 			continue
