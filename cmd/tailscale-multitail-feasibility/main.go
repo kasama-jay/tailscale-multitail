@@ -142,7 +142,7 @@ func run(stateDir, externalPeer string, timeout time.Duration) error {
 		}
 	}
 
-	msg := "PASS: custom TUN bidirectional path; peer inventory; peer-change watch; profile-scoped Status/QueryDNS; and GetServices API succeeded"
+	msg := "PASS: custom TUN bidirectional path; peer inventory; peer-change watch; per-profile Status/QueryDNS; and GetServices API succeeded"
 	if outside.IsValid() {
 		msg += fmt.Sprintf("; external-node ICMP reply succeeded (%s)", outside)
 	}
