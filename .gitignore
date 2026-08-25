@@ -1,2 +1,4 @@
 # Locally built release artifacts.
 dist/
+
+ts-auth-jay

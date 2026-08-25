@@ -23,8 +23,19 @@ go test ./...
 The real-tailnet feasibility check is deliberately opt-in. It creates two
 short-lived nodes with separate state directories, injects IPv4 ICMP packets
 into each custom TUN, and verifies that they emerge from the remote profile's
-custom TUN. It also exercises the supported `LocalClient.Status`, `QueryDNS`,
-and `WatchIPNBus` interfaces.
+custom TUN. It verifies `LocalClient.Status` peer inventory (stable ID,
+canonical IP, and MagicDNS name), `QueryDNS`, `GetServices`, and a
+`WatchIPNBus` peer-add event. `GetServices` validates the supported inventory
+API; an actual Service advertisement additionally needs a tagged node and
+Tailscale service-policy approval.
+
+To test a packet originating from a physically separate node, supply the
+IPv4 Tailscale address of a normal node in the **same** test tailnet. That
+node must permit and answer ICMP:
+
+```sh
+./tailscale-multitail-feasibility --external-peer 100.x.y.z
+```
 
 ```sh
 TSMULTITAIL_TEST_AUTHKEY_A='tskey-auth-…' \
