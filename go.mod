@@ -4,6 +4,7 @@ go 1.27.0
 
 require (
 	github.com/tailscale/wireguard-go v0.0.0-20260715223240-2e01ba5b00f0
+	gopkg.in/yaml.v3 v3.0.1
 	tailscale.com v1.102.3
 )
 
