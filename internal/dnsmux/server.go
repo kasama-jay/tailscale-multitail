@@ -41,6 +41,15 @@ func New(targets []inventory.Target, effective map[string]netip.Addr, q Query) *
 	return s
 }
 func norm(n string) string { return strings.TrimSuffix(strings.ToLower(n), ".") + "." }
+func (s *Server) Update(targets []inventory.Target, effective map[string]netip.Addr) {
+	n := New(targets, effective, s.query)
+	s.mu.Lock()
+	s.targets = n.targets
+	s.effective = n.effective
+	s.reverse = n.reverse
+	s.suffix = n.suffix
+	s.mu.Unlock()
+}
 func (s *Server) Start(addr string) error {
 	h := dns.HandlerFunc(s.ServeDNS)
 	s.udp = &dns.Server{Addr: addr, Net: "udp", Handler: h}
@@ -62,6 +71,8 @@ func (s *Server) Close() error {
 	return e
 }
 func (s *Server) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	m := new(dns.Msg)
 	m.SetReply(r)
 	if len(r.Question) != 1 {

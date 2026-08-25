@@ -31,6 +31,7 @@ type Engine struct {
 	raw         map[netip.Addr]Binding
 	flows       map[string]time.Time
 	flowMu      sync.Mutex
+	bindingsMu  sync.RWMutex
 	wg          sync.WaitGroup
 }
 
@@ -54,6 +55,14 @@ func New(h *hosttun.Device, nat netip.Addr, targets []inventory.Target, leases m
 		}
 	}
 	return e, nil
+}
+func (e *Engine) Update(targets []inventory.Target, leases map[string]netip.Addr, profiles []runtime.DatapathProfile) {
+	n, _ := New(e.host, e.nat, targets, leases, profiles)
+	e.bindingsMu.Lock()
+	e.byEffective = n.byEffective
+	e.byInbound = n.byInbound
+	e.raw = n.raw
+	e.bindingsMu.Unlock()
 }
 func (e *Engine) Run(ctx context.Context) {
 	e.wg.Add(1)
@@ -86,12 +95,13 @@ func (e *Engine) hostLoop(ctx context.Context) {
 			e.trace("host drop src=%s dst=%s err=%v", src, dst, err)
 			continue
 		}
+		e.bindingsMu.RLock()
 		b, ok := e.byEffective[dst]
-		raw := false
 		if !ok {
 			b, ok = e.raw[dst]
-			raw = ok
 		}
+		e.bindingsMu.RUnlock()
+		raw := dst != b.Effective
 		if !ok {
 			e.trace("host drop unmatched dst=%s", dst)
 			continue
@@ -128,7 +138,9 @@ func (e *Engine) profileLoop(ctx context.Context, t *packettun.Device, pid strin
 			}
 			continue
 		}
+		e.bindingsMu.RLock()
 		b, ok := e.byInbound[pid+"/"+src.String()]
+		e.bindingsMu.RUnlock()
 		if !ok {
 			e.trace("profile=%s drop unknown source=%s", pid, src)
 			continue

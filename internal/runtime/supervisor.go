@@ -35,12 +35,13 @@ type ProfileStatus struct {
 }
 
 type profile struct {
-	cfg     config.Profile
-	server  *tsnet.Server
-	tun     *packettun.Device
-	mu      sync.RWMutex
-	status  ProfileStatus
-	targets []inventory.Target
+	cfg      config.Profile
+	server   *tsnet.Server
+	tun      *packettun.Device
+	mu       sync.RWMutex
+	status   ProfileStatus
+	targets  []inventory.Target
+	onChange func()
 }
 
 type Supervisor struct {
@@ -50,6 +51,7 @@ type Supervisor struct {
 	cancel    context.CancelFunc
 	profiles  []*profile
 	store     *state.Store
+	changes   chan struct{}
 	wg        sync.WaitGroup
 }
 
@@ -68,7 +70,7 @@ func New(cfg config.Config, stateRoot string) (*Supervisor, error) {
 		log.Printf("effective IPv4 CIDR changed; previous leases were flushed")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Supervisor{cfg: cfg, stateRoot: stateRoot, ctx: ctx, cancel: cancel, store: store}, nil
+	return &Supervisor{cfg: cfg, stateRoot: stateRoot, ctx: ctx, cancel: cancel, store: store, changes: make(chan struct{}, 1)}, nil
 }
 
 // Start initializes every configured profile in config order. Auth keys are
@@ -100,7 +102,7 @@ func (s *Supervisor) startProfile(ctx context.Context, pc config.Profile) (*prof
 	if err := os.Chmod(dir, 0700); err != nil {
 		return nil, fmt.Errorf("profile %q secure state dir: %w", pc.Name, err)
 	}
-	p := &profile{cfg: pc, tun: packettun.New("mt-"+pc.Name, s.cfg.MTU, 256), status: ProfileStatus{ID: pc.ID, Name: pc.Name, Hostname: pc.Hostname, State: "Starting"}}
+	p := &profile{cfg: pc, tun: packettun.New("mt-"+pc.Name, s.cfg.MTU, 256), status: ProfileStatus{ID: pc.ID, Name: pc.Name, Hostname: pc.Hostname, State: "Starting"}, onChange: s.notify}
 	p.server = &tsnet.Server{Dir: dir, Hostname: pc.Hostname, ControlURL: pc.ControlURL, AdvertiseTags: append([]string(nil), pc.AdvertiseTags...), Tun: p.tun,
 		UserLogf: func(f string, a ...any) { log.Printf("profile=%s: "+f, append([]any{pc.Name}, a...)...) }}
 	p.server.AuthKey = os.Getenv(authKeyEnv(pc.Name))
@@ -167,6 +169,9 @@ func (p *profile) setStatusAndTargets(st *ipnstate.Status, services map[tailcfg.
 	p.status = ps
 	p.targets = targets
 	p.mu.Unlock()
+	if p.onChange != nil {
+		p.onChange()
+	}
 }
 func (p *profile) watch(ctx context.Context) {
 	lc, err := p.server.LocalClient()
@@ -196,6 +201,13 @@ func (p *profile) watch(ctx context.Context) {
 		if len(n.PeersChanged) > 0 || len(n.PeersRemoved) > 0 || n.State != nil || n.SelfChange != nil {
 			_ = p.refresh()
 		}
+	}
+}
+func (s *Supervisor) Changes() <-chan struct{} { return s.changes }
+func (s *Supervisor) notify() {
+	select {
+	case s.changes <- struct{}{}:
+	default:
 	}
 }
 func (s *Supervisor) Status() []ProfileStatus {

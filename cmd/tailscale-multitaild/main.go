@@ -55,12 +55,15 @@ func main() {
 	defer s.Close()
 	inv := s.Inventory()
 	leases, e := s.EffectiveLeases()
+	var h *hosttun.Device
+	var m *mux.Engine
+	var dnsServer *dnsmux.Server
 	if e != nil {
 		log.Fatal(e)
 	}
 	if *hostTUN {
 		pool, _ := netip.ParsePrefix(c.EffectiveIPv4CIDR)
-		h, e := hosttun.Create(c.Interface, c.MTU, c.RoutingTable, pool)
+		h, e = hosttun.Create(c.Interface, c.MTU, c.RoutingTable, pool)
 		if e != nil {
 			log.Fatal(e)
 		}
@@ -76,7 +79,7 @@ func main() {
 			log.Fatal(e)
 		}
 		defer h.Close()
-		m, e := mux.New(h, pool.Masked().Addr().Next(), inv.Targets, leases, s.DatapathProfiles())
+		m, e = mux.New(h, pool.Masked().Addr().Next(), inv.Targets, leases, s.DatapathProfiles())
 		if e != nil {
 			log.Fatal(e)
 		}
@@ -84,7 +87,7 @@ func main() {
 		m.Run(context.Background())
 	}
 	if *dnsListen != "" {
-		dnsServer := dnsmux.New(inv.Targets, leases, s.QueryDNS)
+		dnsServer = dnsmux.New(inv.Targets, leases, s.QueryDNS)
 		if e := dnsServer.Start(*dnsListen); e != nil {
 			log.Fatal(e)
 		}
@@ -101,5 +104,35 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	<-ctx.Done()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-s.Changes():
+			inv = s.Inventory()
+			leases, e = s.EffectiveLeases()
+			if e != nil {
+				log.Printf("reconcile leases: %v", e)
+				continue
+			}
+			routes := make([]netip.Addr, 0, len(inv.Targets)+len(leases))
+			for _, t := range inv.Targets {
+				routes = append(routes, t.CanonicalIP)
+			}
+			for _, ip := range leases {
+				routes = append(routes, ip)
+			}
+			if h != nil {
+				if e := h.ReconcileTargets(routes); e != nil {
+					log.Printf("reconcile routes: %v", e)
+				}
+			}
+			if m != nil {
+				m.Update(inv.Targets, leases, s.DatapathProfiles())
+			}
+			if dnsServer != nil {
+				dnsServer.Update(inv.Targets, leases)
+			}
+		}
+	}
 }

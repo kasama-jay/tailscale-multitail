@@ -110,6 +110,13 @@ func (d *Device) setup(pool netip.Prefix) error {
 	}
 	return nil
 }
+func (d *Device) ReconcileTargets(ips []netip.Addr) error {
+	for i := len(d.routes) - 1; i >= 0; i-- {
+		_ = netlink.RouteDel(&d.routes[i])
+	}
+	d.routes = nil
+	return d.AddTargets(ips)
+}
 func (d *Device) AddTargets(ips []netip.Addr) error {
 	seen := map[netip.Addr]bool{}
 	for _, ip := range ips {
