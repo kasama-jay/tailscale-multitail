@@ -13,6 +13,7 @@ import (
 	"log"
 	"net/netip"
 	"sync"
+	"time"
 )
 
 type Binding struct {
@@ -27,6 +28,9 @@ type Engine struct {
 	nat         netip.Addr
 	byEffective map[netip.Addr]Binding
 	byInbound   map[string]Binding
+	raw         map[netip.Addr]Binding
+	flows       map[string]time.Time
+	flowMu      sync.Mutex
 	wg          sync.WaitGroup
 }
 
@@ -35,7 +39,7 @@ func New(h *hosttun.Device, nat netip.Addr, targets []inventory.Target, leases m
 	for _, p := range profiles {
 		self[p.ID] = p
 	}
-	e := &Engine{host: h, nat: nat, byEffective: map[netip.Addr]Binding{}, byInbound: map[string]Binding{}}
+	e := &Engine{host: h, nat: nat, byEffective: map[netip.Addr]Binding{}, byInbound: map[string]Binding{}, raw: map[netip.Addr]Binding{}, flows: map[string]time.Time{}}
 	for _, t := range targets {
 		p, ok := self[t.ProfileID]
 		ip := leases[inventory.Key(t)]
@@ -45,6 +49,9 @@ func New(h *hosttun.Device, nat netip.Addr, targets []inventory.Target, leases m
 		b := Binding{t, ip, p.SelfIPv4, p.Tun}
 		e.byEffective[ip] = b
 		e.byInbound[t.ProfileID+"/"+t.CanonicalIP.String()] = b
+		if _, exists := e.raw[t.CanonicalIP]; !exists {
+			e.raw[t.CanonicalIP] = b
+		}
 	}
 	return e, nil
 }
@@ -80,8 +87,17 @@ func (e *Engine) hostLoop(ctx context.Context) {
 			continue
 		}
 		b, ok := e.byEffective[dst]
+		raw := false
+		if !ok {
+			b, ok = e.raw[dst]
+			raw = ok
+		}
 		if !ok {
 			e.trace("host drop unmatched dst=%s", dst)
+			continue
+		}
+		if raw && !e.addFlow(flowKey(b.Target.ProfileID, p, false), proto) {
+			e.trace("host raw flow table full")
 			continue
 		}
 		if err := rewrite(p, b.Self, b.Target.CanonicalIP, proto); err == nil {
@@ -103,6 +119,15 @@ func (e *Engine) profileLoop(ctx context.Context, t *packettun.Device, pid strin
 			e.trace("profile=%s drop src=%s dst=%s err=%v", pid, src, dst, err)
 			continue
 		}
+		if e.touchFlow(flowKey(pid, p, true), proto) {
+			if err := rewrite(p, src, e.nat, proto); err == nil {
+				e.trace("profile=%s raw return %s", pid, src)
+				if err := e.host.WritePacket(p); err != nil {
+					e.trace("host write error: %v", err)
+				}
+			}
+			continue
+		}
 		b, ok := e.byInbound[pid+"/"+src.String()]
 		if !ok {
 			e.trace("profile=%s drop unknown source=%s", pid, src)
@@ -117,6 +142,80 @@ func (e *Engine) profileLoop(ctx context.Context, t *packettun.Device, pid strin
 			e.trace("profile rewrite drop: %v", err)
 		}
 	}
+}
+func flowKey(pid string, p []byte, inbound bool) string {
+	src, dst, proto, err := ipv4(p)
+	if err != nil {
+		return ""
+	}
+	n := int(p[0]&15) * 4
+	remote := dst
+	if inbound {
+		remote = src
+	}
+	local, remotePort := uint16(0), uint16(0)
+	if proto == 6 || proto == 17 {
+		if len(p) < n+4 {
+			return ""
+		}
+		a, b := binary.BigEndian.Uint16(p[n:n+2]), binary.BigEndian.Uint16(p[n+2:n+4])
+		if inbound {
+			remotePort = a
+			local = b
+		} else {
+			local = a
+			remotePort = b
+		}
+	} else if proto == 1 {
+		if len(p) < n+6 {
+			return ""
+		}
+		local = binary.BigEndian.Uint16(p[n+4 : n+6])
+	} else {
+		return ""
+	}
+	return fmt.Sprintf("%s/%d/%s/%d/%d", pid, proto, remote, remotePort, local)
+}
+func flowTimeout(proto byte) time.Duration {
+	if proto == 6 {
+		return 5 * time.Minute
+	}
+	if proto == 17 {
+		return time.Minute
+	}
+	return 30 * time.Second
+}
+func (e *Engine) addFlow(k string, proto byte) bool {
+	if k == "" {
+		return false
+	}
+	e.flowMu.Lock()
+	defer e.flowMu.Unlock()
+	now := time.Now()
+	for x, t := range e.flows {
+		if now.Sub(t) > flowTimeout(proto) {
+			delete(e.flows, x)
+		}
+	}
+	if len(e.flows) >= 65536 {
+		return false
+	}
+	e.flows[k] = now
+	return true
+}
+func (e *Engine) touchFlow(k string, proto byte) bool {
+	if k == "" {
+		return false
+	}
+	e.flowMu.Lock()
+	defer e.flowMu.Unlock()
+	t, ok := e.flows[k]
+	if !ok || time.Since(t) > flowTimeout(proto) {
+		delete(e.flows, k)
+		return false
+	}
+	e.flows[k] = time.Now()
+	return true
 }
 func ipv4(p []byte) (netip.Addr, netip.Addr, byte, error) {
 	if len(p) < 20 || p[0]>>4 != 4 {
