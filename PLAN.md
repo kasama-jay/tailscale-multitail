@@ -8,6 +8,30 @@ Primary daemon binary: **`tailscale-multitaild`**
 
 Linux-only daemon for connecting one host to multiple Tailscale tailnets at the same time using upstream `tsnet`, one embedded profile per tailnet, one host-visible TUN, one local DNS service, and a packet mux/translation layer.
 
+## Current implementation status
+
+`master` is an actively tested Linux beta, not yet a final v1 declaration. The latest published artifact is `v1.0.0-beta.6`; `master` also contains subsequent CLI/style work awaiting the next bundled beta.
+
+Implemented and exercised on the playground VM:
+
+- upstream `tsnet` profiles with isolated state and internal TUNs;
+- strict YAML configuration, atomic daemon-owned rewrites, and `flag`-based CLI parsing;
+- authenticated Unix control socket for status, restart, profile login/logout, and live profile addition;
+- persistent effective IPv4 leases, host-TUN routing, ordered raw-IP selection, IPv4 TCP/UDP/ICMP translation, and bounded fragment/flow state;
+- host-TUN batch draining (required for bursty TCP/SSH traffic), with non-blocking per-profile injection;
+- merged effective-IP DNS over UDP/TCP, systemd-resolved per-link configuration, reverse zones, and per-link DNSSEC disabled because the local mux does not sign answers;
+- profile degradation/reconciliation, systemd lifecycle, diagnostics, state corruption recovery, and control-socket authorization.
+
+Validated VM scenarios include effective/raw peer connectivity, HTTP to an ordinary peer, fragmented ICMP, DNS/PTR resolution, login/logout, live add-then-login, control-group access, restart/cleanup, and repeated OpenSSH connections using the default ML-KEM hybrid key exchange.
+
+Still required before final-v1 sign-off:
+
+- repeat end-to-end validation of Tailscale Service traffic. Inventory, DNS, leasing, and route selection are implemented, but the test Service HTTPS endpoint timed out even through a separate direct `tsnet` probe; distinguish Service policy/backend behavior from datapath behavior and record a passing test;
+- explicitly purge conntrack/fragment state owned by a degraded or logged-out profile;
+- complete rate-limited operational-error reporting and a documented metrics surface;
+- run the full multi-profile degradation/recovery and upgrade/rollback test matrix; and
+- final documentation and security review.
+
 ## Goals
 
 - Whole-OS connectivity across multiple tailnets at once.
@@ -171,103 +195,21 @@ If an external resolver returns a canonical Tailscale IP:
 - the host routing layer should still be able to reach it using raw-IP ordered profile selection
 - this is one of the reasons raw canonical IP support is required
 
-## Major technical workstreams
+## Workstream and milestone status
 
-1. **Requirements freeze**
-   - finalize semantics for profile ordering, ambiguity handling, DNS, and config management
-2. **Process/config design**
-   - daemon CLI shape
-   - versioned, strict config/state schema
-   - system YAML file layout and state-directory ownership
-   - Unix control socket protocol and peer-credential authorization
-   - config rewrite/update semantics
-   - routing table configuration
-3. **Profile engine abstraction**
-   - wrapper around upstream `tsnet.Server`
-   - LocalAPI watcher/status interface
-4. **Host TUN design**
-   - Linux TUN creation
-   - address and route reconciliation
-5. **Packet mux/NAT design**
-   - effective-IP translation
-   - raw-IP profile lookup path
-   - IPv4 TCP, UDP, ICMP, and bounded fragmentation/reassembly handling; expire idle state before dropping new traffic under resource pressure (v1 defaults: TCP 5m, UDP 60s, ICMP/fragments 30s; caps: 65,536 flows and 8,192 fragment entries)
-   - checksum handling
-6. **DNS design**
-   - local authoritative records
-   - UDP and TCP DNS on port 53 with EDNS (1232-byte advertised UDP payload); no daemon DNSSEC validation
-   - search-order semantics
-   - forwarding behavior
-   - systemd-resolved per-link DNS/domain configuration and reconciliation without claiming the default `~.` DNS route; install unique tailnet suffixes as ordered host search domains
-7. **Observability design**
-   - status output
-   - collision/ambiguity diagnostics (not default warnings; ordered first-match is expected behavior)
-   - per-profile health
-   - no per-packet logging by default; aggregate counters and rate-limited errors, with explicit temporary debug mode for flow-level detail
-8. **Security review**
-   - tailnet isolation risks
-   - privileges
-   - local control API exposure
+| Milestone | Status | Delivered scope / remaining work |
+| --- | --- | --- |
+| 0 — design | Complete | Requirements, architecture, routing/DNS policy, and security boundaries documented. |
+| 0.5 — tsnet feasibility | Complete | Exact upstream module pinned; custom-TUN, LocalAPI inventory/DNS, and real-tailnet feasibility gate recorded in `docs/milestone_0.5_results.md`. |
+| 1 — profile runtime | Complete | One `tsnet.Server` and internal TUN per profile, separate state directories, LocalAPI status/watchers, degradation/backoff. |
+| 2 — aggregate model | Complete | Ordered peer/Service inventory, canonical collision preservation, deterministic effective leases, online state in live status. |
+| 3 — DNS | Substantially complete | Effective A/PTR, ordered suffix forwarding, UDP/TCP+EDNS, DNS rewrite, resolved reconciliation, reverse route domains, and DNSSEC-off link policy. End-to-end Service HTTPS validation remains open. |
+| 4 — host TUN | Complete for beta | Linux TUN, dedicated table/rules, dynamic `/32` routes, overlap/native-daemon protection, cleanup, and batched reads. |
+| 5 — effective IPv4 datapath | Complete for ordinary peers | IPv4 TCP/UDP/ICMP, checksums, bounded fragments, effective inbound mapping, and VM HTTP/SSH validation. Revalidate against a working Tailscale Service backend before final sign-off. |
+| 6 — raw canonical routing | Complete for ordinary peers | Ordered peer/Service inventory lookup, raw flow state, profile-self source translation, and VM ICMP/TCP validation. Service transport validation remains open. |
+| 7 — deployment hardening | In progress | Systemd, resolved cleanup, control authorization, SQLite recovery, diagnostics, and restart policy are implemented. Flow purge, rate-limited reporting/metrics, full recovery matrix, release/runbook review, and final security review remain. |
 
-## Proposed milestone sequence
-
-### Milestone 0 — design only
-- write PLAN.md
-- write architecture doc
-- capture assumptions and tradeoffs
-
-### Milestone 0.5 — tsnet feasibility gate
-- pin the exact upstream Tailscale module version
-- prove a channel-backed custom `tun.Device` can carry host-TUN-to-profile and reverse packets with a real remote peer
-- verify supported public LocalClient APIs provide required peer, Service, DNS, and netmap-change inventory
-- verify profile-scoped DNS querying and the intended inbound packet path
-- establish integration tests before depending on this behavior
-
-### Milestone 1 — profile/runtime skeleton
-- create daemon shell
-- create profile abstraction around upstream `tsnet`
-- spin up multiple profiles with separate state dirs
-- inspect peer/status data
-
-### Milestone 2 — in-memory model
-- maintain aggregate peer/service/routing database
-- maintain ordered profile index
-- track canonical IP ownership and collisions
-
-### Milestone 3 — DNS MVP
-- local DNS service
-- merged MagicDNS FQDN resolution
-- ordered short-name search
-- MagicDNS always returns effective IPs
-- tailnet-zone forwarding via the authoritative selected profile when local MagicDNS inventory cannot answer; rewrite any mapped canonical direct-peer/Service A record to its effective IP while preserving unrelated public records and CNAME structure, with TTL `min(upstream, 30s)`; public/default DNS remains with the existing host resolver
-
-### Milestone 4 — host TUN MVP
-- create Linux TUN
-- create dedicated routing table and `ip rule` integration
-- install minimal host routes in configured table
-- add per-known-direct-target canonical IP routes
-- add per-effective-IP routes
-- inject/receive packets
-
-### Milestone 5 — effective-IP datapath
-- allocate effective IPs
-- direct peer/service translation
-- host connectivity to effective IPs
-
-### Milestone 6 — raw canonical IP routing
-- ordered per-profile lookup for canonical Tailscale IP destinations
-- apply to both peers and Services IPs
-- add conntrack/state for reply handling
-- status/diagnostics for chosen profile
-
-### Milestone 7 — hardening and deployment
-- per-profile degradation: withdraw a failed profile's routes/DNS/flows while retaining other profiles; retry transient engine failures with backoff, but never automatically re-login an explicitly logged-out profile
-- resilience
-- clean restart behavior
-- metrics/logging
-- recovery tooling
-- hardened systemd unit with runtime-directory/socket ownership, ordering with network and systemd-resolved, least required capabilities, and exit-status policy: controlled CLI restart uses a documented restart status; permanent config/host-conflict failures do not loop; transient runtime failures retry with rate limits
-
+The near-term priority is Milestone 7 closure, not new v1 features.
 ## Default values
 
 - Default TUN interface name: `multitail0`
@@ -285,12 +227,11 @@ V1 configures and manages routes through the numeric table ID only (default `552
 
 ## Reload behavior
 
-In v1, config changes require a daemon restart to take effect.
+In v1, changes to existing profiles, profile ordering/removal, and global network settings require a daemon restart to take effect.
 
-Later we can add:
-- explicit reload support
-- a `SIGHUP` handler for hot-reload
+The deliberate exception is profile addition: `profiles login` reloads the authoritative YAML and starts profiles newly added since daemon startup, allowing `profiles add` followed immediately by login. It does not apply edits to already running profiles.
 
+Later we can add explicit reload and a `SIGHUP` handler for full reconciliation.
 ## Management model
 
 V1 has a daemon-owned Unix-domain control socket. `tsmultitail` uses it for interactive profile login/logout and live status/diagnostics. Logout requires explicit confirmation, immediately withdraws the selected profile's routes/DNS/flows, and retains its configuration and state for later re-login. The socket is local-only, root-owned, group-owned by `tsmultitail`, mode `0660`, and authorizes callers using Unix peer credentials. Members of the `tsmultitail` group may perform management operations and read live metadata.
@@ -299,4 +240,4 @@ The authoritative YAML config is system-managed at `/etc/tailscale-multitail/con
 
 ## Immediate next step
 
-Refine the architecture document into concrete subsystems, data models, and packet-routing semantics before writing code.
+Close the remaining Milestone 7 validation and hardening items, beginning with a known-good Tailscale Service end-to-end test and explicit profile-owned flow/fragment purge on degradation/logout.
