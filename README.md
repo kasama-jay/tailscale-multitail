@@ -76,8 +76,9 @@ environment variables and are never written to YAML, SQLite, or status output.
 `--debug-packets` is intended only for temporary diagnostics because it exposes
 network metadata in logs.
 
-See `PLAN.md`, `docs/architecture.md`, and `docs/command-line.md` for detailed
-semantics and security boundaries.
+See `PLAN.md`, `docs/architecture.md`, `docs/command-line.md`,
+`docs/operations.md`, and `docs/security-review.md` for detailed semantics,
+operations, and security boundaries.
 
 ## Milestone 0.5 feasibility harness
 
