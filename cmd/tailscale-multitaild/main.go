@@ -196,6 +196,17 @@ func run() int {
 				out.Restart = true
 				go shutdownOnce.Do(func() { close(shutdown) })
 			case "login":
+				// Profile additions are written to the authoritative YAML before
+				// login. Start any newly configured profiles so add+login works
+				// without an otherwise unnecessary daemon restart.
+				nc, e := config.Load(*cp)
+				if e == nil {
+					e = s.StartConfiguredProfiles(context.Background(), nc)
+				}
+				if e != nil {
+					out.Error = e.Error()
+					break
+				}
 				x, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 				defer cancel()
 				u, e := s.Login(x, req.Profile, req.AuthKey)

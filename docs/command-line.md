@@ -266,7 +266,7 @@ Flags:
 - `--config <path>`
 
 V1 behavior:
-- this command targets only a profile active in the running daemon. After `profiles add`, restart the daemon before login; v1 does not run temporary/staged tsnet instances.
+- it reads the authoritative YAML and starts a profile newly added since daemon startup, so `profiles add` may be followed immediately by login. Changes to existing profile configuration still require daemon restart.
 - it is implemented by the running daemon through its authenticated Unix control socket; it must not invoke a separate `tailscale` process against a live tsnet state directory
 - supports an interactive browser/device login flow and reports the URL/instructions to the caller
 - supports auth-key bootstrap for unattended enrollment

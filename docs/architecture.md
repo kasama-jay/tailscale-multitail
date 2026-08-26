@@ -122,7 +122,7 @@ Config management is CLI-first:
 - while the daemon runs, authorized CLI config commands use its Unix control socket and the daemon performs atomic, locked YAML rewrites
 - initial config creation before the daemon exists requires root/sudo
 - manual editing is still supported for administrators
-- in v1, changes take effect only after daemon restart; authorized `tsmultitail daemon restart` requests a clean daemon exit and the systemd unit starts the new generation. Login targets only an active running profile, so a newly added profile must be restarted into service before login
+- in v1, most changes take effect only after daemon restart; authorized `tsmultitail daemon restart` requests a clean daemon exit and the systemd unit starts the new generation. As an exception, login reads the authoritative config and starts newly added profiles so `profiles add` can be followed immediately by login; changes to existing profiles, removals, ordering, and global settings still require restart
 - later we can add `SIGHUP`-driven hot reload
 
 Daemon-owned runtime state, including effective leases and allocator metadata, is stored transactionally in a root-owned SQLite database under `/var/lib/tailscale-multitail/`. It is separate from user-managed YAML and must never contain plaintext auth keys. A missing or corrupt database is recreated automatically in v1, with a prominent warning that effective leases may have changed.

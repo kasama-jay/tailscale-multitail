@@ -45,14 +45,15 @@ type profile struct {
 }
 
 type Supervisor struct {
-	cfg       config.Config
-	stateRoot string
-	ctx       context.Context
-	cancel    context.CancelFunc
-	profiles  []*profile
-	store     *state.Store
-	changes   chan struct{}
-	wg        sync.WaitGroup
+	cfg        config.Config
+	stateRoot  string
+	ctx        context.Context
+	cancel     context.CancelFunc
+	profilesMu sync.RWMutex
+	profiles   []*profile
+	store      *state.Store
+	changes    chan struct{}
+	wg         sync.WaitGroup
 }
 
 func New(cfg config.Config, stateRoot string) (*Supervisor, error) {
@@ -89,7 +90,9 @@ func (s *Supervisor) Start(ctx context.Context) error {
 			s.Close()
 			return err
 		}
+		s.profilesMu.Lock()
 		s.profiles = append(s.profiles, p)
+		s.profilesMu.Unlock()
 	}
 	return nil
 }
@@ -245,7 +248,7 @@ func (s *Supervisor) notify() {
 }
 func (s *Supervisor) ValidateDNSSuffixes() error {
 	owner := map[string]string{}
-	for _, p := range s.profiles {
+	for _, p := range s.profilesSnapshot() {
 		p.mu.RLock()
 		n := p.status.DNSName
 		running := p.status.State == "Running"
@@ -267,7 +270,7 @@ func (s *Supervisor) ValidateDNSSuffixes() error {
 func (s *Supervisor) DNSSuffixes() []string {
 	out := []string{}
 	seen := map[string]bool{}
-	for _, p := range s.profiles {
+	for _, p := range s.profilesSnapshot() {
 		p.mu.RLock()
 		n := p.status.DNSName
 		running := p.status.State == "Running"
@@ -283,9 +286,44 @@ func (s *Supervisor) DNSSuffixes() []string {
 	}
 	return out
 }
+func (s *Supervisor) profilesSnapshot() []*profile {
+	s.profilesMu.RLock()
+	defer s.profilesMu.RUnlock()
+	return append([]*profile(nil), s.profiles...)
+}
+
+// StartConfiguredProfiles starts profiles newly added to the authoritative
+// config. Existing profiles remain in their current generation; changing or
+// removing them still requires a daemon restart.
+func (s *Supervisor) StartConfiguredProfiles(ctx context.Context, c config.Config) error {
+	if err := c.Validate(); err != nil {
+		return err
+	}
+	existing := map[string]bool{}
+	for _, p := range s.profilesSnapshot() {
+		existing[p.cfg.ID] = true
+	}
+	for _, pc := range c.Profiles {
+		if existing[pc.ID] {
+			continue
+		}
+		p, err := s.startProfile(ctx, pc)
+		if err != nil {
+			return err
+		}
+		s.profilesMu.Lock()
+		s.profiles = append(s.profiles, p)
+		s.profilesMu.Unlock()
+		existing[pc.ID] = true
+	}
+	s.notify()
+	return nil
+}
+
 func (s *Supervisor) Status() []ProfileStatus {
-	out := make([]ProfileStatus, 0, len(s.profiles))
-	for _, p := range s.profiles {
+	profiles := s.profilesSnapshot()
+	out := make([]ProfileStatus, 0, len(profiles))
+	for _, p := range profiles {
 		p.mu.RLock()
 		out = append(out, p.status)
 		p.mu.RUnlock()
@@ -296,8 +334,8 @@ func (s *Supervisor) Status() []ProfileStatus {
 // Inventory returns an ordered, collision-preserving aggregate view. Raw
 // canonical address selection is performed by inventory.Snapshot.ResolveRaw.
 func (s *Supervisor) Inventory() inventory.Snapshot {
-	profiles := make([]inventory.Profile, 0, len(s.profiles))
-	for order, p := range s.profiles {
+	profiles := make([]inventory.Profile, 0, len(s.profilesSnapshot()))
+	for order, p := range s.profilesSnapshot() {
 		p.mu.RLock()
 		targets := append([]inventory.Target(nil), p.targets...)
 		p.mu.RUnlock()
@@ -316,8 +354,9 @@ type DatapathProfile struct {
 }
 
 func (s *Supervisor) DatapathProfiles() []DatapathProfile {
-	out := make([]DatapathProfile, 0, len(s.profiles))
-	for _, p := range s.profiles {
+	profiles := s.profilesSnapshot()
+	out := make([]DatapathProfile, 0, len(profiles))
+	for _, p := range profiles {
 		p.mu.RLock()
 		var ip netip.Addr
 		for _, x := range p.status.IPs {
@@ -334,7 +373,7 @@ func (s *Supervisor) DatapathProfiles() []DatapathProfile {
 	return out
 }
 func (s *Supervisor) profileByName(name string) *profile {
-	for _, p := range s.profiles {
+	for _, p := range s.profilesSnapshot() {
 		if strings.EqualFold(p.cfg.Name, name) {
 			return p
 		}
@@ -421,7 +460,7 @@ func (s *Supervisor) Logout(ctx context.Context, name string) error {
 	return nil
 }
 func (s *Supervisor) QueryDNS(ctx context.Context, profileID, name, qtype string) ([]byte, error) {
-	for _, p := range s.profiles {
+	for _, p := range s.profilesSnapshot() {
 		if p.cfg.ID == profileID {
 			lc, err := p.server.LocalClient()
 			if err != nil {
@@ -470,7 +509,7 @@ func (s *Supervisor) EffectiveLeases() (map[string]netip.Addr, error) {
 }
 func (s *Supervisor) Close() {
 	s.cancel()
-	for _, p := range s.profiles {
+	for _, p := range s.profilesSnapshot() {
 		_ = p.server.Close()
 	}
 	s.wg.Wait()
