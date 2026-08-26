@@ -57,7 +57,8 @@ func run() int {
 		fmt.Fprintln(os.Stderr, "usage: tailscale-multitaild run [--config PATH] [--state-root PATH] [--validate-config] [--once]")
 		return 2
 	}
-	fs := flag.NewFlagSet("run", flag.ExitOnError)
+	fs := flag.NewFlagSet("run", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
 	cp := fs.String("config", config.DefaultPath, "config path")
 	root := fs.String("state-root", config.DefaultStateRoot, "state root (test override)")
 	valid := fs.Bool("validate-config", false, "validate and exit")
@@ -67,7 +68,15 @@ func run() int {
 	debugPackets := fs.Bool("debug-packets", false, "temporarily log packet-mux decisions")
 	socketPath := fs.String("socket", "", "local privileged control socket path")
 	useResolved := fs.Bool("resolved", false, "configure systemd-resolved for multitail DNS (requires --host-tun)")
-	fs.Parse(os.Args[2:])
+	if e := fs.Parse(os.Args[2:]); e != nil {
+		if e == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+	if len(fs.Args()) != 0 {
+		return fail(fmt.Sprintf("unexpected arguments: %s", strings.Join(fs.Args(), " ")))
+	}
 	c, e := config.Load(*cp)
 	if e != nil {
 		return fail(e)

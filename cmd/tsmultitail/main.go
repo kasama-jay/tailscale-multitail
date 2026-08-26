@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"net"
@@ -19,64 +20,60 @@ import (
 
 var version = "devel"
 
+type stringList []string
+
+func (v *stringList) String() string     { return strings.Join(*v, ",") }
+func (v *stringList) Set(s string) error { *v = append(*v, s); return nil }
+
 func die(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...); os.Exit(2) }
-func configPath(args *[]string) string {
-	p := config.DefaultPath
-	for i := 0; i < len(*args); i++ {
-		if (*args)[i] == "--config" {
-			if i+1 >= len(*args) {
-				die("--config needs a path")
-			}
-			p = (*args)[i+1]
-			*args = append((*args)[:i], (*args)[i+2:]...)
-			break
+func parse(fs *flag.FlagSet, args []string) {
+	fs.SetOutput(os.Stderr)
+	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			os.Exit(0)
 		}
+		die("%v", err)
 	}
-	return p
 }
 func main() {
-	if len(os.Args) == 2 && os.Args[1] == "--version" {
+	fs := flag.NewFlagSet("tsmultitail", flag.ContinueOnError)
+	p := fs.String("config", config.DefaultPath, "path to the YAML configuration")
+	socket := fs.String("socket", "/run/tailscale-multitail/control.sock", "daemon control socket")
+	showVersion := fs.Bool("version", false, "print version and exit")
+	parse(fs, os.Args[1:])
+	a := fs.Args()
+	if *showVersion {
+		if len(a) != 0 {
+			die("--version does not accept a command")
+		}
 		fmt.Println(version)
 		return
 	}
-	a := os.Args[1:]
-	p := configPath(&a)
-	socket := "/run/tailscale-multitail/control.sock"
-	for i := 0; i < len(a); i++ {
-		if a[i] == "--socket" {
-			if i+1 >= len(a) {
-				die("--socket needs a path")
-			}
-			socket = a[i+1]
-			a = append(a[:i], a[i+2:]...)
-			break
-		}
-	}
 	if len(a) == 0 {
-		die("usage: tsmultitail [--config PATH] {validate|example-config|config|profiles}")
+		die("usage: tsmultitail [--config PATH] [--socket PATH] {validate|example-config|config|profiles}")
 	}
 	switch a[0] {
 	case "validate":
-		c, e := config.Load(p)
+		c, e := config.Load(*p)
 		if e != nil {
 			die("%v", e)
 		}
-		fmt.Printf("valid: %s (%d profiles)\n", p, len(c.Profiles))
+		fmt.Printf("valid: %s (%d profiles)\n", *p, len(c.Profiles))
 	case "example-config":
 		b, _ := config.Default().Marshal()
 		os.Stdout.Write(b)
 	case "config":
-		configCmd(socket, p, a[1:])
+		configCmd(*socket, *p, a[1:])
 	case "profiles":
 		if len(a) > 1 && (a[1] == "login" || a[1] == "logout") {
-			profileLive(socket, a[1:])
+			profileLive(*socket, a[1:])
 			return
 		}
-		profilesCmd(socket, p, a[1:])
+		profilesCmd(*socket, *p, a[1:])
 	case "doctor":
-		doctor(p)
+		doctor(*p)
 	case "status":
-		r, e := control.Client(socket, "status")
+		r, e := control.Client(*socket, "status")
 		if e != nil {
 			die("status: %v", e)
 		}
@@ -85,7 +82,7 @@ func main() {
 		if len(a) != 2 || a[1] != "restart" {
 			die("usage: daemon restart")
 		}
-		if _, e := control.Client(socket, "restart"); e != nil {
+		if _, e := control.Client(*socket, "restart"); e != nil {
 			die("restart: %v", e)
 		}
 	default:
@@ -223,26 +220,22 @@ func profilesCmd(socket, p string, a []string) {
 			die("%v", e)
 		}
 	case "add":
-		if len(a) < 3 {
+		if len(a) < 2 {
 			die("usage: profiles add NAME --hostname HOSTNAME [--control-url URL]")
 		}
-		x := config.Profile{Name: a[1]}
-		for i := 2; i < len(a); i += 2 {
-			if i+1 >= len(a) {
-				die("missing value for %s", a[i])
-			}
-			switch a[i] {
-			case "--hostname":
-				x.Hostname = a[i+1]
-			case "--control-url":
-				x.ControlURL = a[i+1]
-			case "--advertise-tag":
-				x.AdvertiseTags = append(x.AdvertiseTags, a[i+1])
-			default:
-				die("unknown flag %s", a[i])
-			}
+		fs := flag.NewFlagSet("profiles add", flag.ContinueOnError)
+		hostname := fs.String("hostname", "", "profile hostname")
+		controlURL := fs.String("control-url", "", "HTTPS control URL")
+		var tags stringList
+		fs.Var(&tags, "advertise-tag", "advertised tag (repeatable)")
+		parse(fs, a[2:])
+		if len(fs.Args()) != 0 {
+			die("unexpected arguments: %s", strings.Join(fs.Args(), " "))
 		}
-		x.ID = newID()
+		if *hostname == "" {
+			die("--hostname is required")
+		}
+		x := config.Profile{Name: a[1], Hostname: *hostname, ControlURL: *controlURL, AdvertiseTags: tags, ID: newID()}
 		c.Profiles = append(c.Profiles, x)
 		if e := writeConfig(socket, p, c); e != nil {
 			die("%v", e)
@@ -267,15 +260,19 @@ func profileLive(socket string, a []string) {
 	}
 	switch a[0] {
 	case "login":
+		fs := flag.NewFlagSet("profiles login", flag.ContinueOnError)
+		authKeyStdin := fs.Bool("auth-key-stdin", false, "read auth key from standard input")
+		parse(fs, a[2:])
+		if len(fs.Args()) != 0 {
+			die("unexpected arguments: %s", strings.Join(fs.Args(), " "))
+		}
 		key := ""
-		if len(a) == 3 && a[2] == "--auth-key-stdin" {
+		if *authKeyStdin {
 			b, e := io.ReadAll(io.LimitReader(os.Stdin, 16<<10))
 			if e != nil {
 				die("read auth key: %v", e)
 			}
 			key = strings.TrimSpace(string(b))
-		} else if len(a) != 2 {
-			die("login accepts only --auth-key-stdin")
 		}
 		r, e := control.ClientRequest(socket, control.Request{Op: "login", Profile: a[1], AuthKey: key})
 		key = ""
@@ -288,12 +285,20 @@ func profileLive(socket string, a []string) {
 			}
 		}
 	case "logout":
-		if len(a) != 3 || a[2] != "--yes" {
+		fs := flag.NewFlagSet("profiles logout", flag.ContinueOnError)
+		yes := fs.Bool("yes", false, "confirm logout")
+		parse(fs, a[2:])
+		if len(fs.Args()) != 0 {
+			die("unexpected arguments: %s", strings.Join(fs.Args(), " "))
+		}
+		if !*yes {
 			die("logout requires --yes")
 		}
 		if _, e := control.ClientRequest(socket, control.Request{Op: "logout", Profile: a[1]}); e != nil {
 			die("logout: %v", e)
 		}
+	default:
+		die("unknown live profile command %q", a[0])
 	}
 }
 func doctor(path string) {
