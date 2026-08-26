@@ -102,61 +102,104 @@ func (s *Supervisor) startProfile(ctx context.Context, pc config.Profile) (*prof
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, fmt.Errorf("profile %q state dir: %w", pc.Name, err)
 	}
+
 	if err := os.Chmod(dir, 0700); err != nil {
 		return nil, fmt.Errorf("profile %q secure state dir: %w", pc.Name, err)
 	}
-	p := &profile{cfg: pc, tun: packettun.New("mt-"+pc.Name, s.cfg.MTU, 256), status: ProfileStatus{ID: pc.ID, Name: pc.Name, Hostname: pc.Hostname, State: "Starting"}, onChange: s.notify}
-	p.server = &tsnet.Server{Dir: dir, Hostname: pc.Hostname, ControlURL: pc.ControlURL, AdvertiseTags: append([]string(nil), pc.AdvertiseTags...), Tun: p.tun,
-		UserLogf: func(f string, a ...any) { log.Printf("profile=%s: "+f, append([]any{pc.Name}, a...)...) }}
+
+	p := &profile{
+		cfg: pc,
+		tun: packettun.New("mt-"+pc.Name, s.cfg.MTU, 256),
+		status: ProfileStatus{
+			ID:       pc.ID,
+			Name:     pc.Name,
+			Hostname: pc.Hostname,
+			State:    "Starting",
+		},
+		onChange: s.notify,
+	}
+	p.server = &tsnet.Server{
+		Dir:           dir,
+		Hostname:      pc.Hostname,
+		ControlURL:    pc.ControlURL,
+		AdvertiseTags: append([]string(nil), pc.AdvertiseTags...),
+		Tun:           p.tun,
+		UserLogf: func(f string, a ...any) {
+			log.Printf("profile=%s: "+f, append([]any{pc.Name}, a...)...)
+		},
+	}
 	p.server.AuthKey = os.Getenv(authKeyEnv(pc.Name))
 	if err := p.server.Start(); err != nil {
 		p.tun.Close()
 		return nil, fmt.Errorf("start profile %q: %w", pc.Name, err)
 	}
+
 	if p.server.AuthKey != "" {
 		upCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 		defer cancel()
+
 		if _, err := p.server.Up(upCtx); err != nil {
 			p.server.Close()
 			return nil, fmt.Errorf("authenticate profile %q: %w", pc.Name, err)
 		}
 	}
+
 	if err := p.refresh(); err != nil {
 		p.server.Close()
 		return nil, fmt.Errorf("profile %q status: %w", pc.Name, err)
 	}
+
 	s.wg.Add(1)
-	go func() { defer s.wg.Done(); p.watch(s.ctx) }()
+	go func() {
+		defer s.wg.Done()
+		p.watch(s.ctx)
+	}()
 	return p, nil
 }
 
-func authKeyEnv(name string) string { return "TAILSCALE_AUTH_KEY_" + strings.ToUpper(name) }
+func authKeyEnv(name string) string {
+	return "TAILSCALE_AUTH_KEY_" + strings.ToUpper(name)
+}
 
 func (p *profile) refresh() error {
 	lc, err := p.server.LocalClient()
 	if err != nil {
 		return err
 	}
+
 	st, err := lc.Status(context.Background())
 	if err != nil {
 		return err
 	}
+
 	if st.BackendState != "Running" {
 		p.setStatusAndTargets(st, nil, "")
 		return nil
 	}
+
 	services, err := lc.GetServices(context.Background())
 	if err != nil {
 		return err
 	}
+
 	p.setStatusAndTargets(st, services, "")
 	return nil
 }
+
 func (p *profile) setStatusAndTargets(st *ipnstate.Status, services map[tailcfg.ServiceName]tailcfg.ServiceDetails, failure string) {
-	ps := ProfileStatus{ID: p.cfg.ID, Name: p.cfg.Name, Hostname: p.cfg.Hostname, State: st.BackendState, IPs: append([]netip.Addr(nil), st.TailscaleIPs...), PeerCount: len(st.Peer), Error: failure}
+	ps := ProfileStatus{
+		ID:        p.cfg.ID,
+		Name:      p.cfg.Name,
+		Hostname:  p.cfg.Hostname,
+		State:     st.BackendState,
+		IPs:       append([]netip.Addr(nil), st.TailscaleIPs...),
+		PeerCount: len(st.Peer),
+		Error:     failure,
+	}
 	if st.Self != nil {
 		ps.DNSName = st.Self.DNSName
 	}
+
 	targets := make([]inventory.Target, 0, len(st.Peer)+len(services))
 	if st.BackendState == "Running" {
 		for _, peer := range st.Peer {
@@ -167,6 +210,7 @@ func (p *profile) setStatusAndTargets(st *ipnstate.Status, services map[tailcfg.
 			}
 		}
 	}
+
 	for name, svc := range services {
 		for _, ip := range svc.Addrs {
 			if ip.Is4() {
@@ -174,23 +218,28 @@ func (p *profile) setStatusAndTargets(st *ipnstate.Status, services map[tailcfg.
 			}
 		}
 	}
+
 	if st.BackendState != "Running" {
 		targets = nil
 	}
+
 	p.mu.Lock()
 	p.status = ps
 	p.targets = targets
 	p.mu.Unlock()
+
 	if p.onChange != nil {
 		p.onChange()
 	}
 }
+
 func (p *profile) watch(ctx context.Context) {
 	backoff := time.Second
 	for ctx.Err() == nil {
 		lc, err := p.server.LocalClient()
 		if err == nil {
 			w, e := lc.WatchIPNBus(ctx, ipn.NotifyInitialStatus|ipn.NotifyPeerChanges)
+
 			if e == nil {
 				err = nil
 				for {
@@ -199,53 +248,68 @@ func (p *profile) watch(ctx context.Context) {
 						err = e
 						break
 					}
+
 					if n.ErrMessage != nil {
 						p.degrade(*n.ErrMessage)
 						continue
 					}
+
 					if n.InitialStatus != nil {
 						_ = p.refresh()
 						continue
 					}
+
 					if len(n.PeersChanged) > 0 || len(n.PeersRemoved) > 0 || n.State != nil || n.SelfChange != nil {
 						_ = p.refresh()
 					}
 				}
+
 				w.Close()
 			}
 		}
 		if ctx.Err() != nil {
 			return
 		}
+
 		p.degrade(fmt.Sprintf("LocalAPI watch unavailable: %v", err))
+
 		select {
 		case <-ctx.Done():
 			return
 		case <-time.After(backoff):
 		}
+
 		if backoff < time.Minute {
 			backoff *= 2
 		}
+
 		_ = p.refresh()
 	}
 }
+
 func (p *profile) degrade(reason string) {
 	p.mu.Lock()
 	p.status.State = "Degraded"
 	p.status.Error = reason
 	p.targets = nil
 	p.mu.Unlock()
+
 	if p.onChange != nil {
 		p.onChange()
 	}
 }
-func (s *Supervisor) Changes() <-chan struct{} { return s.changes }
+
+func (s *Supervisor) Changes() <-chan struct{} {
+	return s.changes
+}
+
 func (s *Supervisor) notify() {
 	select {
 	case s.changes <- struct{}{}:
 	default:
 	}
 }
+
 func (s *Supervisor) ValidateDNSSuffixes() error {
 	owner := map[string]string{}
 	for _, p := range s.profilesSnapshot() {
@@ -253,20 +317,25 @@ func (s *Supervisor) ValidateDNSSuffixes() error {
 		n := p.status.DNSName
 		running := p.status.State == "Running"
 		p.mu.RUnlock()
+
 		if !running {
 			continue
 		}
+
 		parts := strings.SplitN(strings.TrimSuffix(n, "."), ".", 2)
 		if len(parts) != 2 {
 			continue
 		}
+
 		if prior, ok := owner[parts[1]]; ok && prior != p.cfg.ID {
 			return fmt.Errorf("duplicate active MagicDNS suffix %q on profiles %q and %q", parts[1], prior, p.cfg.ID)
 		}
+
 		owner[parts[1]] = p.cfg.ID
 	}
 	return nil
 }
+
 func (s *Supervisor) DNSSuffixes() []string {
 	out := []string{}
 	seen := map[string]bool{}
@@ -275,9 +344,11 @@ func (s *Supervisor) DNSSuffixes() []string {
 		n := p.status.DNSName
 		running := p.status.State == "Running"
 		p.mu.RUnlock()
+
 		if !running {
 			continue
 		}
+
 		parts := strings.SplitN(strings.TrimSuffix(n, "."), ".", 2)
 		if len(parts) == 2 && !seen[parts[1]] {
 			seen[parts[1]] = true
@@ -286,9 +357,11 @@ func (s *Supervisor) DNSSuffixes() []string {
 	}
 	return out
 }
+
 func (s *Supervisor) profilesSnapshot() []*profile {
 	s.profilesMu.RLock()
 	defer s.profilesMu.RUnlock()
+
 	return append([]*profile(nil), s.profiles...)
 }
 
@@ -299,23 +372,28 @@ func (s *Supervisor) StartConfiguredProfiles(ctx context.Context, c config.Confi
 	if err := c.Validate(); err != nil {
 		return err
 	}
+
 	existing := map[string]bool{}
 	for _, p := range s.profilesSnapshot() {
 		existing[p.cfg.ID] = true
 	}
+
 	for _, pc := range c.Profiles {
 		if existing[pc.ID] {
 			continue
 		}
+
 		p, err := s.startProfile(ctx, pc)
 		if err != nil {
 			return err
 		}
+
 		s.profilesMu.Lock()
 		s.profiles = append(s.profiles, p)
 		s.profilesMu.Unlock()
 		existing[pc.ID] = true
 	}
+
 	s.notify()
 	return nil
 }
@@ -328,6 +406,7 @@ func (s *Supervisor) Status() []ProfileStatus {
 		out = append(out, p.status)
 		p.mu.RUnlock()
 	}
+
 	return out
 }
 
@@ -335,12 +414,23 @@ func (s *Supervisor) Status() []ProfileStatus {
 // canonical address selection is performed by inventory.Snapshot.ResolveRaw.
 func (s *Supervisor) Inventory() inventory.Snapshot {
 	profiles := make([]inventory.Profile, 0, len(s.profilesSnapshot()))
+
 	for order, p := range s.profilesSnapshot() {
 		p.mu.RLock()
 		targets := append([]inventory.Target(nil), p.targets...)
 		p.mu.RUnlock()
-		profiles = append(profiles, inventory.Profile{ID: p.cfg.ID, Name: p.cfg.Name, Order: order, Targets: targets})
+
+		profiles = append(
+			profiles,
+			inventory.Profile{
+				ID:      p.cfg.ID,
+				Name:    p.cfg.Name,
+				Order:   order,
+				Targets: targets,
+			},
+		)
 	}
+
 	return inventory.Build(profiles)
 }
 
@@ -356,6 +446,7 @@ type DatapathProfile struct {
 func (s *Supervisor) DatapathProfiles() []DatapathProfile {
 	profiles := s.profilesSnapshot()
 	out := make([]DatapathProfile, 0, len(profiles))
+
 	for _, p := range profiles {
 		p.mu.RLock()
 		var ip netip.Addr
@@ -366,34 +457,41 @@ func (s *Supervisor) DatapathProfiles() []DatapathProfile {
 			}
 		}
 		p.mu.RUnlock()
+
 		if ip.IsValid() {
 			out = append(out, DatapathProfile{ID: p.cfg.ID, SelfIPv4: ip, Tun: p.tun})
 		}
 	}
 	return out
 }
+
 func (s *Supervisor) profileByName(name string) *profile {
 	for _, p := range s.profilesSnapshot() {
 		if strings.EqualFold(p.cfg.Name, name) {
 			return p
 		}
 	}
+
 	return nil
 }
+
 func (s *Supervisor) Login(ctx context.Context, name, authKey string) (string, error) {
 	p := s.profileByName(name)
 	if p == nil {
 		return "", fmt.Errorf("unknown profile %q", name)
 	}
+
 	lc, e := p.server.LocalClient()
 	if e != nil {
 		return "", e
 	}
+
 	if authKey != "" {
 		prefs, e := lc.GetPrefs(ctx)
 		if e != nil {
 			return "", e
 		}
+
 		prefs.WantRunning = true
 		prefs.LoggedOut = false
 		prefs.RouteAll = false
@@ -404,12 +502,15 @@ func (s *Supervisor) Login(ctx context.Context, name, authKey string) (string, e
 		if e = lc.Start(ctx, ipn.Options{AuthKey: authKey, UpdatePrefs: prefs}); e != nil {
 			return "", e
 		}
+
 		if e = lc.StartLoginInteractive(ctx); e != nil {
 			return "", e
 		}
+
 		authKey = ""
 		deadline := time.NewTicker(250 * time.Millisecond)
 		defer deadline.Stop()
+
 		for {
 			select {
 			case <-ctx.Done():
@@ -423,42 +524,52 @@ func (s *Supervisor) Login(ctx context.Context, name, authKey string) (string, e
 			}
 		}
 	}
+
 	w, e := lc.WatchIPNBus(ctx, ipn.NotifyInitialState)
 	if e != nil {
 		return "", e
 	}
 	defer w.Close()
+
 	if e = lc.StartLoginInteractive(ctx); e != nil {
 		return "", e
 	}
+
 	for {
 		n, e := w.Next()
 		if e != nil {
 			return "", e
 		}
+
 		if n.BrowseToURL != nil {
 			return *n.BrowseToURL, nil
 		}
 	}
 }
+
 func (s *Supervisor) Logout(ctx context.Context, name string) error {
 	p := s.profileByName(name)
 	if p == nil {
 		return fmt.Errorf("unknown profile %q", name)
 	}
+
 	lc, e := p.server.LocalClient()
 	if e != nil {
 		return e
 	}
+
 	if e = lc.Logout(ctx); e != nil {
 		return e
 	}
+
 	p.degrade("explicitly logged out")
 	p.mu.Lock()
 	p.status.State = "NeedsLogin"
 	p.mu.Unlock()
+
 	return nil
 }
+
 func (s *Supervisor) QueryDNS(ctx context.Context, profileID, name, qtype string) ([]byte, error) {
 	for _, p := range s.profilesSnapshot() {
 		if p.cfg.ID == profileID {
@@ -466,22 +577,27 @@ func (s *Supervisor) QueryDNS(ctx context.Context, profileID, name, qtype string
 			if err != nil {
 				return nil, err
 			}
+
 			b, _, err := lc.QueryDNS(ctx, name, qtype)
 			return b, err
 		}
 	}
+
 	return nil, fmt.Errorf("unknown profile %q", profileID)
 }
+
 func (s *Supervisor) EffectiveLeases() (map[string]netip.Addr, error) {
 	inv := s.Inventory()
 	a, err := allocator.New(s.cfg.EffectiveIPv4CIDR)
 	if err != nil {
 		return nil, err
 	}
+
 	persisted, err := s.store.Leases()
 	if err != nil {
 		return nil, err
 	}
+
 	for k, v := range persisted {
 		ip, e := netip.ParseAddr(v)
 		if e == nil {
@@ -490,14 +606,17 @@ func (s *Supervisor) EffectiveLeases() (map[string]netip.Addr, error) {
 			}
 		}
 	}
+
 	keys := make([]string, 0, len(inv.Targets))
 	for _, t := range inv.Targets {
 		keys = append(keys, inventory.Key(t))
 	}
+
 	leases, err := a.Allocate(keys)
 	if err != nil {
 		return nil, err
 	}
+
 	out := make(map[string]netip.Addr, len(leases))
 	for _, l := range leases {
 		out[l.Key] = l.IP
@@ -505,17 +624,26 @@ func (s *Supervisor) EffectiveLeases() (map[string]netip.Addr, error) {
 			return nil, err
 		}
 	}
+
 	return out, nil
 }
+
 func (s *Supervisor) Close() {
 	s.cancel()
 	for _, p := range s.profilesSnapshot() {
 		_ = p.server.Close()
 	}
+
 	s.wg.Wait()
 	if s.store != nil {
 		_ = s.store.Close()
 	}
 }
-func AuthKeyEnv(name string) string   { return authKeyEnv(name) }
-func StateDir(root, id string) string { return filepath.Join(root, id) }
+
+func AuthKeyEnv(name string) string {
+	return authKeyEnv(name)
+}
+
+func StateDir(root, id string) string {
+	return filepath.Join(root, id)
+}

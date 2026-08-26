@@ -23,12 +23,14 @@ type Target struct {
 	Online      bool       `json:"online"`
 	CanonicalIP netip.Addr `json:"canonical_ip"`
 }
+
 type Profile struct {
 	ID      string
 	Name    string
 	Order   int
 	Targets []Target
 }
+
 type Snapshot struct {
 	Targets   []Target                `json:"targets"`
 	Canonical map[netip.Addr][]Target `json:"-"`
@@ -53,6 +55,7 @@ func Build(profiles []Profile) Snapshot {
 			}
 		}
 	}
+
 	sort.Slice(s.Targets, func(i, j int) bool {
 		a, b := s.Targets[i], s.Targets[j]
 		if a.Order != b.Order {
@@ -66,6 +69,7 @@ func Build(profiles []Profile) Snapshot {
 		}
 		return a.CanonicalIP.Less(b.CanonicalIP)
 	})
+
 	return s
 }
 
@@ -78,6 +82,7 @@ func (s Snapshot) ResolveRaw(ip netip.Addr) (Target, bool) {
 	sort.SliceStable(v, func(i, j int) bool { return v[i].Order < v[j].Order })
 	return v[0], true
 }
+
 func (s Snapshot) Collisions() map[netip.Addr][]Target {
 	r := map[netip.Addr][]Target{}
 	for ip, v := range s.Canonical {

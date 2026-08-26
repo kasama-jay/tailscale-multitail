@@ -14,6 +14,7 @@ import (
 const TTL = 30
 
 type Query func(context.Context, string, string, string) ([]byte, error)
+
 type Server struct {
 	mu        sync.RWMutex
 	targets   []inventory.Target
@@ -25,7 +26,14 @@ type Server struct {
 }
 
 func New(targets []inventory.Target, effective map[string]netip.Addr, q Query) *Server {
-	s := &Server{targets: append([]inventory.Target(nil), targets...), effective: effective, reverse: map[netip.Addr]string{}, suffix: map[string]string{}, query: q}
+	s := &Server{
+		targets:   append([]inventory.Target(nil), targets...),
+		effective: effective,
+		reverse:   map[netip.Addr]string{},
+		suffix:    map[string]string{},
+		query:     q,
+	}
+
 	for _, t := range targets {
 		if t.FQDN != "" {
 			f := norm(t.FQDN)
@@ -38,9 +46,14 @@ func New(targets []inventory.Target, effective map[string]netip.Addr, q Query) *
 			}
 		}
 	}
+
 	return s
 }
-func norm(n string) string { return strings.TrimSuffix(strings.ToLower(n), ".") + "." }
+
+func norm(n string) string {
+	return strings.TrimSuffix(strings.ToLower(n), ".") + "."
+}
+
 func (s *Server) Update(targets []inventory.Target, effective map[string]netip.Addr) {
 	n := New(targets, effective, s.query)
 	s.mu.Lock()
@@ -50,35 +63,43 @@ func (s *Server) Update(targets []inventory.Target, effective map[string]netip.A
 	s.suffix = n.suffix
 	s.mu.Unlock()
 }
+
 func (s *Server) Start(addr string) error {
 	h := dns.HandlerFunc(s.ServeDNS)
 	pc, e := net.ListenPacket("udp", addr)
 	if e != nil {
 		return e
 	}
+
 	ln, e := net.Listen("tcp", addr)
 	if e != nil {
 		pc.Close()
 		return e
 	}
+
 	s.udp = &dns.Server{PacketConn: pc, Handler: h}
 	s.tcp = &dns.Server{Listener: ln, Handler: h}
+
 	go s.udp.ActivateAndServe()
 	go s.tcp.ActivateAndServe()
 	return nil
 }
+
 func (s *Server) Close() error {
 	var e error
 	if s.udp != nil {
 		e = s.udp.Shutdown()
 	}
+
 	if s.tcp != nil {
 		if x := s.tcp.Shutdown(); e == nil {
 			e = x
 		}
 	}
+
 	return e
 }
+
 func (s *Server) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -87,11 +108,13 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	if r.IsEdns0() != nil {
 		m.SetEdns0(1232, false)
 	}
+
 	if len(r.Question) != 1 {
 		m.Rcode = dns.RcodeFormatError
 		w.WriteMsg(m)
 		return
 	}
+
 	q := r.Question[0]
 	name := norm(q.Name)
 	if q.Qtype == dns.TypeAAAA {
@@ -99,11 +122,13 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 		w.WriteMsg(m)
 		return
 	}
+
 	if q.Qtype == dns.TypePTR {
 		if s.ptr(m, q, name) {
 			w.WriteMsg(m)
 			return
 		}
+
 		if pid := s.profileForPTR(name); pid != "" && s.query != nil {
 			b, e := s.query(context.Background(), pid, q.Name, "PTR")
 			if e == nil {
@@ -115,19 +140,23 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 				}
 			}
 		}
+
 		m.Rcode = dns.RcodeNameError
 		w.WriteMsg(m)
 		return
 	}
+
 	if q.Qtype != dns.TypeA {
 		m.Rcode = dns.RcodeNotImplemented
 		w.WriteMsg(m)
 		return
 	}
+
 	if s.localA(m, q, name) {
 		w.WriteMsg(m)
 		return
 	}
+
 	if pid := s.profileFor(name); pid != "" && s.query != nil {
 		b, e := s.query(context.Background(), pid, q.Name, "A")
 		if e == nil {
@@ -143,6 +172,7 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	m.Rcode = dns.RcodeNameError
 	w.WriteMsg(m)
 }
+
 func (s *Server) localA(m *dns.Msg, q dns.Question, name string) bool {
 	for _, t := range s.targets {
 		match := norm(t.FQDN) == name
@@ -152,33 +182,60 @@ func (s *Server) localA(m *dns.Msg, q dns.Question, name string) bool {
 		if match {
 			if ip := s.effective[inventory.Key(t)]; ip.IsValid() {
 				m.Authoritative = true
-				m.Answer = append(m.Answer, &dns.A{Hdr: dns.RR_Header{Name: q.Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: TTL}, A: net.IP(ip.AsSlice())})
+				m.Answer = append(
+					m.Answer,
+					&dns.A{
+						Hdr: dns.RR_Header{
+							Name:   q.Name,
+							Rrtype: dns.TypeA,
+							Class:  dns.ClassINET,
+							Ttl:    TTL,
+						},
+						A: net.IP(ip.AsSlice()),
+					},
+				)
 				return true
 			}
 		}
 	}
 	return false
 }
+
 func (s *Server) ptr(m *dns.Msg, q dns.Question, name string) bool {
 	for ip, f := range s.reverse {
 		want, _ := dns.ReverseAddr(ip.String())
 		if norm(want) == name {
 			m.Authoritative = true
-			m.Answer = append(m.Answer, &dns.PTR{Hdr: dns.RR_Header{Name: q.Name, Rrtype: dns.TypePTR, Class: dns.ClassINET, Ttl: TTL}, Ptr: f})
+			m.Answer = append(
+				m.Answer,
+				&dns.PTR{
+					Hdr: dns.RR_Header{
+						Name:   q.Name,
+						Rrtype: dns.TypePTR,
+						Class:  dns.ClassINET,
+						Ttl:    TTL,
+					},
+					Ptr: f,
+				},
+			)
 			return true
 		}
 	}
+
 	return false
 }
+
 func (s *Server) profileForPTR(n string) string {
 	labels := strings.Split(strings.TrimSuffix(n, "."), ".")
 	if len(labels) != 6 || labels[4] != "in-addr" || labels[5] != "arpa" {
 		return ""
 	}
+
 	ip, e := netip.ParseAddr(strings.Join([]string{labels[3], labels[2], labels[1], labels[0]}, "."))
 	if e != nil {
 		return ""
 	}
+
 	for _, t := range s.targets {
 		if t.CanonicalIP == ip {
 			return t.ProfileID
@@ -186,6 +243,7 @@ func (s *Server) profileForPTR(n string) string {
 	}
 	return ""
 }
+
 func (s *Server) profileFor(n string) string {
 	for suffix, p := range s.suffix {
 		if strings.HasSuffix(n, suffix) {
@@ -194,6 +252,7 @@ func (s *Server) profileFor(n string) string {
 	}
 	return ""
 }
+
 func (s *Server) rewrite(m *dns.Msg) {
 	all := append([]dns.RR{}, m.Answer...)
 	all = append(all, m.Ns...)
@@ -215,6 +274,7 @@ func (s *Server) rewrite(m *dns.Msg) {
 		}
 	}
 }
+
 func min(a, b uint32) uint32 {
 	if a < b {
 		return a

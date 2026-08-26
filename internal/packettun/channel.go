@@ -93,14 +93,17 @@ func (d *Device) Read(bufs [][]byte, sizes []int, offset int) (int, error) {
 	if len(bufs) == 0 || len(sizes) < len(bufs) {
 		return 0, errors.New("invalid TUN read batch")
 	}
+
 	select {
 	case p := <-d.toEngine:
 		if len(bufs[0]) < offset+len(p) {
 			return 0, io.ErrShortBuffer
 		}
+
 		copy(bufs[0][offset:], p)
 		sizes[0] = len(p)
 		return 1, nil
+
 	case <-d.done:
 		return 0, io.EOF
 	}
@@ -113,6 +116,7 @@ func (d *Device) Write(bufs [][]byte, offset int) (int, error) {
 		if offset > len(b) {
 			return i, errors.New("invalid TUN write offset")
 		}
+
 		if err := d.send(d.fromEngine, b[offset:]); err != nil {
 			return i, err
 		}
