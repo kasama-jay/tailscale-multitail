@@ -3,7 +3,7 @@ package ip
 import "net"
 
 func IPv4NumFromBytes(b [4]byte) uint32 {
-	var n uint32 = 0
+	var n uint32
 
 	n = (uint32(b[0]) << 24) | (uint32(b[1]) << 16) | (uint32(b[2]) << 8) | uint32(b[3])
 
