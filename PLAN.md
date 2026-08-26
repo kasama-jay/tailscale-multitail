@@ -48,7 +48,7 @@ Linux-only daemon for connecting one host to multiple Tailscale tailnets at the 
   - the effective IP CIDR/pool to use
   - the ordered list of Tailscale profiles
   - each profile's derived state directory (not user-selectable): `/var/lib/tailscale-multitail/<profile-id>`
-  - a stable profile ID and explicitly configured, distinct hostname for each profile
+  - a stable profile ID and explicitly configured hostname for each profile; hostname uniqueness is enforced by Tailscale within each tailnet, not across local profiles
   - profile enrollment configuration (interactive login and/or auth-key bootstrap); v1 has no destructive login-reset flag, so fresh identity creation uses the explicit remove/purge/re-add lifecycle
   - optional per-profile HTTPS control URL (default: upstream Tailscale control plane); require normal TLS certificate validation and permit no insecure override
   - profile names constrained to `[A-Za-z][A-Za-z0-9_]*` and unique after uppercase normalization, permitting collision-free auth-key environment variable names
@@ -80,7 +80,7 @@ If two active profiles contain the same canonical Tailscale IP, then:
 - **daemon**
   - owns lifecycle, config, state, routing policy, DNS policy, observability
 - **profile engine**
-  - one `tsnet.Server` per profile, with a stable profile ID and distinct hostname
+  - one `tsnet.Server` per profile, with a stable profile ID and configured hostname (which may be reused across distinct tailnets)
   - one internal channel-backed TUN per profile
   - one LocalAPI client per profile
 - **host TUN**

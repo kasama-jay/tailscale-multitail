@@ -191,7 +191,7 @@ Arguments:
 - `<name>` profile name
 
 Flags:
-- `--hostname <hostname>` required; must be unique across configured profiles
+- `--hostname <hostname>` required; it may be reused across profiles because uniqueness is scoped to each tailnet
 - `--profile-id <UUID>` optional explicit restore of retained state; otherwise generated
 - `--control-url <https-url>` optional per-profile control URL; defaults to upstream Tailscale control plane and must use HTTPS with normal TLS certificate validation (no insecure override)
 - `--advertise-tag <tag:...>` repeatable optional tag; tag ownership remains enforced by the selected tailnet

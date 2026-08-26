@@ -87,7 +87,7 @@ func (c Config) Validate() error {
 	if p.Bits() > 30 {
 		return errors.New("effective_ipv4_cidr needs at least four addresses")
 	}
-	seenName, seenID, seenHost := map[string]bool{}, map[string]bool{}, map[string]bool{}
+	seenName, seenID := map[string]bool{}, map[string]bool{}
 	for i, x := range c.Profiles {
 		if x.ID == "" || x.Name == "" || x.Hostname == "" {
 			return fmt.Errorf("profiles[%d]: id, name, and hostname are required", i)
@@ -104,11 +104,6 @@ func (c Config) Validate() error {
 			return fmt.Errorf("duplicate profile id %q", x.ID)
 		}
 		seenID[x.ID] = true
-		h := strings.ToLower(x.Hostname)
-		if seenHost[h] {
-			return fmt.Errorf("duplicate hostname %q", x.Hostname)
-		}
-		seenHost[h] = true
 		if x.ControlURL != "" {
 			u, e := url.Parse(x.ControlURL)
 			if e != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {

@@ -6,9 +6,10 @@ retain independent console or SSH access while evaluating it.
 1. Download both the release archive and its `.sha256` file, then verify:
 
    ```sh
-   sha256sum -c tailscale-multitail_1.0.0-beta.1_linux_amd64.tar.gz.sha256
-   tar -xzf tailscale-multitail_1.0.0-beta.1_linux_amd64.tar.gz
-   cd tailscale-multitail_1.0.0-beta.1_linux_amd64
+   # Substitute the version shown in the release asset name.
+   sha256sum -c tailscale-multitail_<VERSION>_linux_amd64.tar.gz.sha256
+   tar -xzf tailscale-multitail_<VERSION>_linux_amd64.tar.gz
+   cd tailscale-multitail_<VERSION>_linux_amd64
    sudo ./install.sh
    ```
 

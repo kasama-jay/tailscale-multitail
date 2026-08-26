@@ -33,7 +33,7 @@ The daemon is responsible for:
 A **profile** represents one embedded Tailscale node and one tailnet membership.
 
 Each profile has its own:
-- stable profile ID and explicitly configured, distinct hostname
+- stable profile ID and explicitly configured hostname; it may be reused across profiles because Tailscale scopes hostname uniqueness to a tailnet
 - `tsnet.Server`
 - daemon-derived state directory: `/var/lib/tailscale-multitail/<profile-id>`
 - machine identity
@@ -107,7 +107,7 @@ V1 is a system daemon. Its authoritative config is `/etc/tailscale-multitail/con
 The config has a required schema version (`version: 1` in v1) and uses strict decoding: unknown fields are rejected rather than silently ignored. It should include at least:
 - effective IP CIDR/pool
 - ordered profile list
-- profile names/immutable IDs and explicitly configured, distinct hostnames
+- profile names/immutable IDs and explicitly configured hostnames; hostname reuse across distinct tailnets is allowed
 - daemon-derived per-profile state directories under `/var/lib/tailscale-multitail/`
 - enrollment configuration for interactive login and/or auth-key bootstrap
 - optional per-profile HTTPS control URL (default: upstream Tailscale control plane); only HTTPS with normal TLS certificate validation is accepted, with no insecure override

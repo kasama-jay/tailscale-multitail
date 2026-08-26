@@ -22,6 +22,23 @@ profiles:
 	if c.Profiles[0].StateDir("/state") != "/state/abc" {
 		t.Fatal("bad state dir")
 	}
+	// Tailscale hostname uniqueness is scoped to a tailnet; profiles may be in
+	// different tailnets, so local configuration must permit reuse.
+	if _, err := Parse([]byte(`version: 1
+interface: multitail0
+routing_table: 552
+mtu: 1280
+effective_ipv4_cidr: 10.192.0.0/16
+profiles:
+- id: one
+  name: One
+  hostname: shared
+- id: two
+  name: Two
+  hostname: shared
+`)); err != nil {
+		t.Fatalf("reused hostname rejected: %v", err)
+	}
 	for _, bad := range []string{"unknown: x\n" + good, `version: 1
 interface: multitail0
 routing_table: 52
