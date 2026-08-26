@@ -20,6 +20,7 @@ type Target struct {
 	Kind        Kind       `json:"kind"`
 	ID          string     `json:"id"`
 	FQDN        string     `json:"fqdn,omitempty"`
+	Online      bool       `json:"online"`
 	CanonicalIP netip.Addr `json:"canonical_ip"`
 }
 type Profile struct {

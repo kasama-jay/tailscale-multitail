@@ -162,7 +162,7 @@ func (p *profile) setStatusAndTargets(st *ipnstate.Status, services map[tailcfg.
 		for _, peer := range st.Peer {
 			for _, ip := range peer.TailscaleIPs {
 				if ip.Is4() {
-					targets = append(targets, inventory.Target{Kind: inventory.Node, ID: string(peer.ID), FQDN: peer.DNSName, CanonicalIP: ip})
+					targets = append(targets, inventory.Target{Kind: inventory.Node, ID: string(peer.ID), FQDN: peer.DNSName, Online: peer.Online, CanonicalIP: ip})
 				}
 			}
 		}
