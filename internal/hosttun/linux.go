@@ -21,12 +21,13 @@ import (
 const RulePriority = 5260
 
 type Device struct {
-	Tun    tun.Device
-	Name   string
-	link   netlink.Link
-	table  int
-	routes []netlink.Route
-	rule   netlink.Rule
+	Tun     tun.Device
+	Name    string
+	link    netlink.Link
+	table   int
+	routes  []netlink.Route
+	rule    netlink.Rule
+	pending [][]byte
 }
 
 func CheckNativeTailscale() error {
@@ -177,18 +178,40 @@ func netipToIPNet(p netip.Prefix) *net.IPNet {
 	return &net.IPNet{IP: net.IP(p.Addr().AsSlice()), Mask: net.CIDRMask(p.Bits(), 32)}
 }
 func (d *Device) ReadPacket(buf []byte) ([]byte, error) {
+	if len(d.pending) != 0 {
+		p := d.pending[0]
+		d.pending = d.pending[1:]
+		return p, nil
+	}
 	if len(buf) < device.MessageTransportHeaderSize+1 {
 		return nil, fmt.Errorf("host TUN buffer too short")
 	}
-	sizes := make([]int, 1)
-	n, err := d.Tun.Read([][]byte{buf}, sizes, device.MessageTransportHeaderSize)
+	batchSize := d.Tun.BatchSize()
+	if batchSize < 1 {
+		batchSize = 1
+	}
+	bufs := make([][]byte, batchSize)
+	bufs[0] = buf
+	for i := 1; i < batchSize; i++ {
+		bufs[i] = make([]byte, len(buf))
+	}
+	sizes := make([]int, batchSize)
+	n, err := d.Tun.Read(bufs, sizes, device.MessageTransportHeaderSize)
 	if err != nil {
 		return nil, err
 	}
-	if n != 1 {
-		return nil, fmt.Errorf("unexpected host TUN batch %d", n)
+	if n < 1 || n > len(bufs) {
+		return nil, fmt.Errorf("invalid host TUN batch %d", n)
 	}
-	return append([]byte(nil), buf[device.MessageTransportHeaderSize:device.MessageTransportHeaderSize+sizes[0]]...), nil
+	for i := 0; i < n; i++ {
+		if sizes[i] < 1 || device.MessageTransportHeaderSize+sizes[i] > len(bufs[i]) {
+			return nil, fmt.Errorf("invalid host TUN packet size %d", sizes[i])
+		}
+		d.pending = append(d.pending, append([]byte(nil), bufs[i][device.MessageTransportHeaderSize:device.MessageTransportHeaderSize+sizes[i]]...))
+	}
+	p := d.pending[0]
+	d.pending = d.pending[1:]
+	return p, nil
 }
 func (d *Device) WritePacket(p []byte) error {
 	buf := make([]byte, device.MessageTransportHeaderSize+len(p))

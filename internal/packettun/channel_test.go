@@ -6,6 +6,17 @@ import (
 	"testing"
 )
 
+func TestTryInjectDoesNotBlockOnFullQueue(t *testing.T) {
+	d := New("profile-test", 1280, 1)
+	defer d.Close()
+	if err := d.TryInject([]byte{1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.TryInject([]byte{2}); err != errQueueFull {
+		t.Fatalf("TryInject = %v, want queue-full", err)
+	}
+}
+
 func TestPacketOwnershipAndDirection(t *testing.T) {
 	d := New("profile-test", 1280, 2)
 	defer d.Close()

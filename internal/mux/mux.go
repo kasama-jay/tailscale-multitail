@@ -130,6 +130,7 @@ func (e *Engine) hostLoop(ctx context.Context) {
 	for {
 		p, err := e.host.ReadPacket(buf)
 		if err != nil {
+			log.Printf("mux: host TUN read stopped: %v", err)
 			return
 		}
 		e.hostPackets.Add(1)
@@ -156,7 +157,10 @@ func (e *Engine) hostLoop(ctx context.Context) {
 		}
 		if err := rewrite(p, b.Self, b.Target.CanonicalIP, proto); err == nil {
 			e.trace("host inject %s -> %s via %s", src, dst, b.Target.ProfileID)
-			_ = b.Tun.Inject(p)
+			if err := b.Tun.TryInject(p); err != nil {
+				e.drops.Add(1)
+				e.trace("host inject drop via %s: %v", b.Target.ProfileID, err)
+			}
 		} else {
 			e.trace("host rewrite drop: %v", err)
 		}

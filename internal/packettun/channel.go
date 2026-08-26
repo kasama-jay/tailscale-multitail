@@ -12,6 +12,7 @@ import (
 )
 
 var errClosed = errors.New("channel tun is closed")
+var errQueueFull = errors.New("channel tun queue full")
 
 // Device is a bounded, in-process packet TUN. Packets injected through Inject
 // are read by tsnet; packets written by tsnet are available through Receive.
@@ -52,6 +53,20 @@ func (d *Device) BatchSize() int           { return 1 }
 // accepted or the device is closed; callers should arrange cancellation at the
 // mux layer.
 func (d *Device) Inject(packet []byte) error { return d.send(d.toEngine, packet) }
+
+// TryInject supplies a packet without allowing a stalled embedded profile to
+// block the shared host mux. Callers should drop and account for backpressure.
+func (d *Device) TryInject(packet []byte) error {
+	p := append([]byte(nil), packet...)
+	select {
+	case d.toEngine <- p:
+		return nil
+	case <-d.done:
+		return errClosed
+	default:
+		return errQueueFull
+	}
+}
 
 // Receive returns one packet emitted by the embedded profile.
 func (d *Device) Receive() ([]byte, error) {
