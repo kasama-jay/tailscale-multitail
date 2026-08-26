@@ -296,25 +296,22 @@ Flags:
 
 V1 behavior:
 - this command is executed by the running daemon through its authenticated Unix control socket
-- it affects only the selected profile, immediately withdraws its routes/DNS/flows, and transitions it to `NeedsLogin`
+- it affects only the selected profile, immediately withdraws its routes/DNS and purges profile-owned mux flow/fragment state before transitioning it to `NeedsLogin`
 - it retains the profile configuration and state directory for later re-login; state deletion remains the explicit `profiles remove --purge-state --yes` operation
 
 ## `tsmultitail status`
 
-Print high-level daemon/config status.
+Print live daemon status as JSON through the authenticated local control socket.
 
-In v1 this reads live daemon state through the authenticated local control socket.
+The response contains profile state, ordered peer/Service targets, effective leases, and `datapath` counters. Node targets include `online`, which reflects upstream Tailscale control-plane presence. Service targets do not have peer online state.
 
-Possible output:
-- config path in use
-- configured interface name
-- configured routing table
-- profile order
-- effective IPv4 CIDR
+`datapath` is the v1 metrics surface: `host_packets`, `profile_packets`, `drops`, flow/fragment-capacity drops, current flow/fragment counts, profile-state purge totals, and emitted rate-limited operational errors. Counters reset when the daemon restarts.
 
-Flags:
-- `--config <path>`
-- `--json`
+Global flags must precede the command:
+
+```sh
+tsmultitail --socket /run/tailscale-multitail/control.sock status
+```
 
 ## `tsmultitail doctor`
 

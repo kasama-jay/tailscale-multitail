@@ -449,6 +449,7 @@ func (s *Supervisor) DatapathProfiles() []DatapathProfile {
 
 	for _, p := range profiles {
 		p.mu.RLock()
+		running := p.status.State == "Running"
 		var ip netip.Addr
 		for _, x := range p.status.IPs {
 			if x.Is4() {
@@ -458,7 +459,7 @@ func (s *Supervisor) DatapathProfiles() []DatapathProfile {
 		}
 		p.mu.RUnlock()
 
-		if ip.IsValid() {
+		if running && ip.IsValid() {
 			out = append(out, DatapathProfile{ID: p.cfg.ID, SelfIPv4: ip, Tun: p.tun})
 		}
 	}

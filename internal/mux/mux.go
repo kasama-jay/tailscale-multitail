@@ -12,6 +12,7 @@ import (
 	"github.com/jay/tailscale-multitail/internal/runtime"
 	"log"
 	"net/netip"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -35,6 +36,9 @@ type Stats struct {
 	Drops              uint64 `json:"drops"`
 	FlowLimitDrops     uint64 `json:"flow_limit_drops"`
 	FragmentLimitDrops uint64 `json:"fragment_limit_drops"`
+	PurgedFlows        uint64 `json:"purged_flows"`
+	PurgedFragments    uint64 `json:"purged_fragments"`
+	RateLimitedErrors  uint64 `json:"rate_limited_errors"`
 	Flows              int    `json:"flows"`
 	Fragments          int    `json:"fragments"`
 }
@@ -63,6 +67,11 @@ type Engine struct {
 	drops              atomic.Uint64
 	flowLimitDrops     atomic.Uint64
 	fragmentLimitDrops atomic.Uint64
+	purgedFlows        atomic.Uint64
+	purgedFragments    atomic.Uint64
+	rateLimitedErrors  atomic.Uint64
+	warningMu          sync.Mutex
+	warnings           map[string]time.Time
 	profileMu          sync.Mutex
 	profileSeen        map[*packettun.Device]bool
 	profiles           []runtime.DatapathProfile
@@ -83,6 +92,7 @@ func New(h *hosttun.Device, nat netip.Addr, targets []inventory.Target, leases m
 		fragments:     map[string]fragmentState{},
 		profileSeen:   map[*packettun.Device]bool{},
 		profiles:      append([]runtime.DatapathProfile(nil), profiles...),
+		warnings:      map[string]time.Time{},
 	}
 
 	for _, p := range profiles {
@@ -109,13 +119,57 @@ func New(h *hosttun.Device, nat netip.Addr, targets []inventory.Target, leases m
 
 func (e *Engine) Update(targets []inventory.Target, leases map[string]netip.Addr, profiles []runtime.DatapathProfile) {
 	n, _ := New(e.host, e.nat, targets, leases, profiles)
+
 	e.bindingsMu.Lock()
+	removed := make(map[string]bool)
+	for id := range e.selfByProfile {
+		if _, ok := n.selfByProfile[id]; !ok {
+			removed[id] = true
+		}
+	}
 	e.byEffective = n.byEffective
 	e.byInbound = n.byInbound
 	e.raw = n.raw
 	e.selfByProfile = n.selfByProfile
 	e.bindingsMu.Unlock()
+
+	e.purgeProfiles(removed)
 	e.ensureProfileLoops(profiles)
+}
+
+func (e *Engine) purgeProfiles(removed map[string]bool) {
+	if len(removed) == 0 {
+		return
+	}
+
+	var flows, fragments uint64
+	e.flowMu.Lock()
+	for key := range e.flows {
+		for id := range removed {
+			if strings.HasPrefix(key, id+"/") {
+				delete(e.flows, key)
+				flows++
+				break
+			}
+		}
+	}
+	e.flowMu.Unlock()
+
+	e.fragmentMu.Lock()
+	for key := range e.fragments {
+		for id := range removed {
+			if strings.HasPrefix(key, id+"/") {
+				delete(e.fragments, key)
+				fragments++
+				break
+			}
+		}
+	}
+	e.fragmentMu.Unlock()
+
+	e.purgedFlows.Add(flows)
+	e.purgedFragments.Add(fragments)
+	log.Printf("mux: purged state for withdrawn profiles: flows=%d fragments=%d", flows, fragments)
 }
 
 func (e *Engine) Run(ctx context.Context) {
@@ -155,6 +209,25 @@ func (e *Engine) trace(f string, a ...any) {
 	}
 }
 
+func (e *Engine) warnf(key, f string, a ...any) {
+	e.warningMu.Lock()
+	last := e.warnings[key]
+	if time.Since(last) < 30*time.Second {
+		e.warningMu.Unlock()
+		return
+	}
+	e.warnings[key] = time.Now()
+	e.warningMu.Unlock()
+
+	e.rateLimitedErrors.Add(1)
+	log.Printf("mux: "+f, a...)
+}
+
+func (e *Engine) dropf(key, f string, a ...any) {
+	e.drops.Add(1)
+	e.warnf(key, f, a...)
+}
+
 func (e *Engine) hostLoop(ctx context.Context) {
 	buf := make([]byte, 65535)
 	for {
@@ -167,7 +240,7 @@ func (e *Engine) hostLoop(ctx context.Context) {
 		e.hostPackets.Add(1)
 		src, dst, proto, err := ipv4(p)
 		if err != nil || src != e.nat {
-			e.trace("host drop src=%s dst=%s err=%v", src, dst, err)
+			e.dropf("host-invalid", "dropping invalid host packet")
 			continue
 		}
 
@@ -179,13 +252,13 @@ func (e *Engine) hostLoop(ctx context.Context) {
 		e.bindingsMu.RUnlock()
 		raw := dst != b.Effective
 		if !ok {
-			e.trace("host drop unmatched dst=%s", dst)
+			e.dropf("host-unmatched", "dropping host packet with no multitail route")
 			continue
 		}
 
 		offset, _ := fragmentBits(p)
 		if raw && offset == 0 && !e.addFlow(flowKey(b.Target.ProfileID, p, false), proto) {
-			e.trace("host raw flow table full")
+			e.dropf("flow-capacity", "dropping packet because the raw flow table is full")
 			continue
 		}
 
@@ -196,7 +269,7 @@ func (e *Engine) hostLoop(ctx context.Context) {
 				e.trace("host inject drop via %s: %v", b.Target.ProfileID, err)
 			}
 		} else {
-			e.trace("host rewrite drop: %v", err)
+			e.dropf("host-rewrite", "dropping packet after host address translation failure: %v", err)
 		}
 	}
 }
@@ -417,10 +490,23 @@ func (e *Engine) Stats() Stats {
 	e.flowMu.Lock()
 	flows := len(e.flows)
 	e.flowMu.Unlock()
+
 	e.fragmentMu.Lock()
-	frags := len(e.fragments)
+	fragments := len(e.fragments)
 	e.fragmentMu.Unlock()
-	return Stats{e.hostPackets.Load(), e.profilePackets.Load(), e.drops.Load(), e.flowLimitDrops.Load(), e.fragmentLimitDrops.Load(), flows, frags}
+
+	return Stats{
+		HostPackets:        e.hostPackets.Load(),
+		ProfilePackets:     e.profilePackets.Load(),
+		Drops:              e.drops.Load(),
+		FlowLimitDrops:     e.flowLimitDrops.Load(),
+		FragmentLimitDrops: e.fragmentLimitDrops.Load(),
+		PurgedFlows:        e.purgedFlows.Load(),
+		PurgedFragments:    e.purgedFragments.Load(),
+		RateLimitedErrors:  e.rateLimitedErrors.Load(),
+		Flows:              flows,
+		Fragments:          fragments,
+	}
 }
 
 func ipv4(p []byte) (netip.Addr, netip.Addr, byte, error) {

@@ -26,7 +26,6 @@ Validated VM scenarios include effective/raw peer connectivity, HTTP to an ordin
 
 Still required before final-v1 sign-off:
 
-- repeat end-to-end validation of Tailscale Service traffic. Inventory, DNS, leasing, and route selection are implemented, but the test Service HTTPS endpoint timed out even through a separate direct `tsnet` probe; distinguish Service policy/backend behavior from datapath behavior and record a passing test;
 - explicitly purge conntrack/fragment state owned by a degraded or logged-out profile;
 - complete rate-limited operational-error reporting and a documented metrics surface;
 - run the full multi-profile degradation/recovery and upgrade/rollback test matrix; and
@@ -203,11 +202,11 @@ If an external resolver returns a canonical Tailscale IP:
 | 0.5 — tsnet feasibility | Complete | Exact upstream module pinned; custom-TUN, LocalAPI inventory/DNS, and real-tailnet feasibility gate recorded in `docs/milestone_0.5_results.md`. |
 | 1 — profile runtime | Complete | One `tsnet.Server` and internal TUN per profile, separate state directories, LocalAPI status/watchers, degradation/backoff. |
 | 2 — aggregate model | Complete | Ordered peer/Service inventory, canonical collision preservation, deterministic effective leases, online state in live status. |
-| 3 — DNS | Substantially complete | Effective A/PTR, ordered suffix forwarding, UDP/TCP+EDNS, DNS rewrite, resolved reconciliation, reverse route domains, and DNSSEC-off link policy. End-to-end Service HTTPS validation remains open. |
+| 3 — DNS | Complete for beta | Effective A/PTR, ordered suffix forwarding, UDP/TCP+EDNS, DNS rewrite, resolved reconciliation, reverse route domains, DNSSEC-off link policy, and validated Service HTTPS DNS path. |
 | 4 — host TUN | Complete for beta | Linux TUN, dedicated table/rules, dynamic `/32` routes, overlap/native-daemon protection, cleanup, and batched reads. |
-| 5 — effective IPv4 datapath | Complete for ordinary peers | IPv4 TCP/UDP/ICMP, checksums, bounded fragments, effective inbound mapping, and VM HTTP/SSH validation. Revalidate against a working Tailscale Service backend before final sign-off. |
-| 6 — raw canonical routing | Complete for ordinary peers | Ordered peer/Service inventory lookup, raw flow state, profile-self source translation, and VM ICMP/TCP validation. Service transport validation remains open. |
-| 7 — deployment hardening | In progress | Systemd, resolved cleanup, control authorization, SQLite recovery, diagnostics, and restart policy are implemented. Flow purge, rate-limited reporting/metrics, full recovery matrix, release/runbook review, and final security review remain. |
+| 5 — effective IPv4 datapath | Complete for beta | IPv4 TCP/UDP/ICMP, checksums, bounded fragments, effective inbound mapping, and VM HTTP/SSH plus known-good Service HTTPS validation. |
+| 6 — raw canonical routing | Complete for beta | Ordered peer/Service inventory lookup, raw flow state, profile-self source translation, and VM ICMP/TCP validation. |
+| 7 — deployment hardening | In progress | Systemd, resolved cleanup, control authorization, SQLite recovery, diagnostics, restart policy, profile-state purge, and status metrics are implemented. Full recovery matrix, release/runbook review, and final security review remain. |
 
 The near-term priority is Milestone 7 closure, not new v1 features.
 ## Default values
@@ -240,4 +239,4 @@ The authoritative YAML config is system-managed at `/etc/tailscale-multitail/con
 
 ## Immediate next step
 
-Close the remaining Milestone 7 validation and hardening items, beginning with a known-good Tailscale Service end-to-end test and explicit profile-owned flow/fragment purge on degradation/logout.
+Complete the Milestone 7 recovery/upgrade matrix, release runbook, and final security review.
