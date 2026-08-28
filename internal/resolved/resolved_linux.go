@@ -41,10 +41,14 @@ func Configure(ctx context.Context, ifindex int, dnsIP netip.Addr, suffixes, rou
 	}
 
 	// The local DNS mux synthesizes effective A/PTR records and forwards
-	// profile DNS replies; it does not provide DNSSEC signatures. Force this
-	// link's validation policy off rather than inheriting a global "yes" policy
-	// that would reject every unsigned MagicDNS answer.
+	// profile DNS replies; it neither signs responses nor accepts DNS-over-TLS.
+	// Override inherited global policies for this dedicated plaintext local link.
 	if e = o.CallWithContext(ctx, "org.freedesktop.resolve1.Manager.SetLinkDNSSEC", 0, int32(ifindex), "no").Err; e != nil {
+		cl.Revert(context.Background())
+		return nil, e
+	}
+
+	if e = o.CallWithContext(ctx, "org.freedesktop.resolve1.Manager.SetLinkDNSOverTLS", 0, int32(ifindex), "no").Err; e != nil {
 		cl.Revert(context.Background())
 		return nil, e
 	}

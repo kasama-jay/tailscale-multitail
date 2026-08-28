@@ -19,7 +19,7 @@ Implemented and exercised on the playground VM:
 - authenticated Unix control socket for status, restart, profile login/logout, and live profile addition;
 - persistent effective IPv4 leases, host-TUN routing, ordered raw-IP selection, IPv4 TCP/UDP/ICMP translation, and bounded fragment/flow state;
 - host-TUN batch draining (required for bursty TCP/SSH traffic), with non-blocking per-profile injection;
-- merged effective-IP DNS over UDP/TCP, systemd-resolved per-link configuration, reverse zones, and per-link DNSSEC disabled because the local mux does not sign answers;
+- merged effective-IP DNS over UDP/TCP, systemd-resolved per-link configuration, reverse zones, and per-link DNSSEC/DNS-over-TLS disabled because the local mux is unsigned plaintext DNS;
 - profile degradation/reconciliation, systemd lifecycle, diagnostics, state corruption recovery, and control-socket authorization.
 
 Validated VM scenarios include effective/raw peer connectivity, HTTP to an ordinary peer, fragmented ICMP, DNS/PTR resolution, login/logout, live add-then-login, control-group access, restart/cleanup, and repeated OpenSSH connections using the default ML-KEM hybrid key exchange.
@@ -202,7 +202,7 @@ If an external resolver returns a canonical Tailscale IP:
 | 0.5 — tsnet feasibility | Complete | Exact upstream module pinned; custom-TUN, LocalAPI inventory/DNS, and real-tailnet feasibility gate recorded in `docs/milestone_0.5_results.md`. |
 | 1 — profile runtime | Complete | One `tsnet.Server` and internal TUN per profile, separate state directories, LocalAPI status/watchers, degradation/backoff. |
 | 2 — aggregate model | Complete | Ordered peer/Service inventory, canonical collision preservation, deterministic effective leases, online state in live status. |
-| 3 — DNS | Complete for beta | Effective A/PTR, ordered suffix forwarding, UDP/TCP+EDNS, DNS rewrite, resolved reconciliation, reverse route domains, DNSSEC-off link policy, and validated Service HTTPS DNS path. |
+| 3 — DNS | Complete for beta | Effective A/PTR, ordered suffix forwarding, UDP/TCP+EDNS, DNS rewrite, resolved reconciliation, reverse route domains, DNSSEC/DNS-over-TLS-off link policy, and validated Service HTTPS DNS path. |
 | 4 — host TUN | Complete for beta | Linux TUN, dedicated table/rules, dynamic `/32` routes, overlap/native-daemon protection, cleanup, and batched reads. |
 | 5 — effective IPv4 datapath | Complete for beta | IPv4 TCP/UDP/ICMP, checksums, bounded fragments, effective inbound mapping, and VM HTTP/SSH plus known-good Service HTTPS validation. |
 | 6 — raw canonical routing | Complete for beta | Ordered peer/Service inventory lookup, raw flow state, profile-self source translation, and VM ICMP/TCP validation. |
