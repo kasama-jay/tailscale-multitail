@@ -4,9 +4,22 @@
 
 `tailscale-multitaild` runs as root because it creates a TUN device, installs
 routes/rules, binds DNS port 53, and configures systemd-resolved. Its management
-socket is root-owned, group-owned by `tsmultitail`, mode `0660`, and checks Unix
-peer credentials including supplementary group membership. Membership in that
-group is therefore equivalent to local network-management authority.
+socket is root-owned, group-owned by `tsmultitail`, mode `0660`, and checks
+kernel-provided Unix peer credentials including supplementary group membership.
+The server bounds concurrent connections, applies a short I/O deadline, limits
+request fields, and rejects unexpected secret-bearing fields.
+
+Membership in `tsmultitail` delegates a deliberately narrow operational role:
+live status, login, logout, and controlled daemon restart. It does **not**
+delegate arbitrary configuration writes. `config_write` is accepted only from
+UID 0, so a group member cannot choose root-owned config paths, interface/table
+settings, a custom control server, profile tags, or future root-executed
+configuration fields. Profile additions/config edits therefore require root
+(or a declarative system configuration such as NixOS).
+
+A group member can still deliberately disrupt the delegated service by logout
+or restart; that is inherent in granting those operations and should be treated
+as network-operator authority, not general root authority.
 
 The systemd unit restricts capabilities to `CAP_NET_ADMIN` and
 `CAP_NET_BIND_SERVICE`, enables `NoNewPrivileges`, and applies filesystem and

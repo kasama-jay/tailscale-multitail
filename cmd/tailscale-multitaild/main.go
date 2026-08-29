@@ -213,14 +213,17 @@ func run() int {
 	var shutdownOnce sync.Once
 	var configMu sync.Mutex
 	if *socketPath != "" {
-		gid := uint32(0)
-		if g, e := user.LookupGroup("tsmultitail"); e == nil {
-			if n, e := strconv.ParseUint(g.Gid, 10, 32); e == nil {
-				gid = uint32(n)
-			}
+		g, e := user.LookupGroup("tsmultitail")
+		if e != nil {
+			return fail(fmt.Errorf("lookup tsmultitail group: %w", e))
 		}
 
-		cs, e := control.Listen(*socketPath, gid, func(req control.Request) control.Response {
+		gid, e := strconv.ParseUint(g.Gid, 10, 32)
+		if e != nil {
+			return fail(fmt.Errorf("parse tsmultitail group ID: %w", e))
+		}
+
+		cs, e := control.Listen(*socketPath, uint32(gid), func(caller control.Caller, req control.Request) control.Response {
 			out := control.Response{}
 			switch req.Op {
 			case "status":
@@ -285,6 +288,11 @@ func run() int {
 					out.OK = true
 				}
 			case "config_write":
+				if !caller.Root {
+					out.Error = "config writes require root"
+					break
+				}
+
 				configMu.Lock()
 				defer configMu.Unlock()
 

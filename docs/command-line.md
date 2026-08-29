@@ -22,7 +22,7 @@ V1 is a system-daemon design. Management is CLI-first, with a project-specific a
 
 Default config path: `/etc/tailscale-multitail/config.yaml`.
 
-Default daemon control socket path: `/run/tailscale-multitail/control.sock`. It is local-only, root-owned, group-owned by `tsmultitail`, mode `0660`, and authorizes callers based on Unix peer credentials. Group members may manage profiles and read live metadata. Global config-selection flags may override the config path for explicit administrative or test use.
+Default daemon control socket path: `/run/tailscale-multitail/control.sock`. It is local-only, root-owned, group-owned by `tsmultitail`, mode `0660`, and authorizes callers based on Unix peer credentials. Group members may read live metadata, login/logout configured profiles, and request a controlled restart; root is required for daemon-side config writes and profile/config mutations. Global config-selection flags may override the config path for explicit administrative or test use.
 
 ## CLI shape
 

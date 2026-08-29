@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 )
 
 type Request struct {
@@ -31,13 +32,24 @@ type Response struct {
 	Restart bool   `json:"restart,omitempty"`
 }
 
-type Handler func(Request) Response
+// Caller is the kernel-authenticated Unix peer credential for a request.
+// Root callers have UID 0; non-root callers are authorized only if they are a
+// member of the daemon's configured management group.
+type Caller struct {
+	UID  uint32
+	GID  uint32
+	PID  int32
+	Root bool
+}
+
+type Handler func(Caller, Request) Response
 
 type Server struct {
 	l          *net.UnixListener
 	path       string
 	allowedGID uint32
 	handler    Handler
+	sem        chan struct{}
 	wg         sync.WaitGroup
 }
 
@@ -65,7 +77,13 @@ func Listen(path string, allowedGID uint32, h Handler) (*Server, error) {
 		return nil, e
 	}
 
-	s := &Server{l: l, path: path, allowedGID: allowedGID, handler: h}
+	s := &Server{
+		l:          l,
+		path:       path,
+		allowedGID: allowedGID,
+		handler:    h,
+		sem:        make(chan struct{}, 64),
+	}
 	s.wg.Add(1)
 	go s.accept()
 
@@ -79,13 +97,28 @@ func (s *Server) accept() {
 		if e != nil {
 			return
 		}
-		s.wg.Add(1)
-		go func() { defer s.wg.Done(); defer c.Close(); s.handle(c) }()
+		select {
+		case s.sem <- struct{}{}:
+			s.wg.Add(1)
+			go func() {
+				defer s.wg.Done()
+				defer func() { <-s.sem }()
+				defer c.Close()
+				s.handle(c)
+			}()
+		default:
+			_ = c.Close()
+		}
 	}
 }
 
 func (s *Server) handle(c *net.UnixConn) {
-	if !authorized(c, s.allowedGID) {
+	caller, ok := authorized(c, s.allowedGID)
+	if !ok {
+		return
+	}
+
+	if e := c.SetReadDeadline(time.Now().Add(5 * time.Second)); e != nil {
 		return
 	}
 
@@ -95,13 +128,46 @@ func (s *Server) handle(c *net.UnixConn) {
 	if e := dec.Decode(&r); e != nil {
 		return
 	}
-	out := s.handler(r)
+
+	if !validRequest(r) {
+		return
+	}
+
+	if e := c.SetReadDeadline(time.Time{}); e != nil {
+		return
+	}
+
+	out := s.handler(caller, r)
 	r.AuthKey = ""
+	if e := c.SetWriteDeadline(time.Now().Add(5 * time.Second)); e != nil {
+		return
+	}
+
 	err := json.NewEncoder(c).Encode(out)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "control: failed to write response: %v\n", err)
 	}
 
+}
+
+func validRequest(r Request) bool {
+	if len(r.Op) == 0 || len(r.Op) > 32 || len(r.Profile) > 256 {
+		return false
+	}
+
+	if len(r.AuthKey) > 16<<10 || len(r.ConfigYAML) > 1<<20 {
+		return false
+	}
+
+	if r.AuthKey != "" && r.Op != "login" {
+		return false
+	}
+
+	if r.ConfigYAML != "" && r.Op != "config_write" {
+		return false
+	}
+
+	return true
 }
 
 func (s *Server) Close() error {
@@ -111,10 +177,10 @@ func (s *Server) Close() error {
 	return e
 }
 
-func authorized(c *net.UnixConn, gid uint32) bool {
+func authorized(c *net.UnixConn, gid uint32) (Caller, bool) {
 	raw, e := c.SyscallConn()
 	if e != nil {
-		return false
+		return Caller{}, false
 	}
 
 	var cred *syscall.Ucred
@@ -122,16 +188,17 @@ func authorized(c *net.UnixConn, gid uint32) bool {
 		cred, _ = syscall.GetsockoptUcred(int(fd), syscall.SOL_SOCKET, syscall.SO_PEERCRED)
 	})
 	if cred == nil {
-		return false
+		return Caller{}, false
 	}
 
-	if cred.Uid == 0 || cred.Gid == gid {
-		return true
+	caller := Caller{UID: cred.Uid, GID: cred.Gid, PID: cred.Pid, Root: cred.Uid == 0}
+	if caller.Root || cred.Gid == gid {
+		return caller, true
 	}
 
 	b, e := os.ReadFile(fmt.Sprintf("/proc/%d/status", cred.Pid))
 	if e != nil {
-		return false
+		return Caller{}, false
 	}
 
 	for _, line := range strings.Split(string(b), "\n") {
@@ -141,12 +208,12 @@ func authorized(c *net.UnixConn, gid uint32) bool {
 		for _, g := range strings.Fields(strings.TrimPrefix(line, "Groups:")) {
 			n, e := strconv.ParseUint(g, 10, 32)
 			if e == nil && uint32(n) == gid {
-				return true
+				return caller, true
 			}
 		}
 	}
 
-	return false
+	return Caller{}, false
 }
 
 func ClientRequest(path string, req Request) (Response, error) {
