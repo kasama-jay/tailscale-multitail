@@ -10,7 +10,7 @@ Linux-only daemon for connecting one host to multiple Tailscale tailnets at the 
 
 ## Current implementation status
 
-`master` is an actively tested Linux beta, not yet a final v1 declaration. The latest published artifact is `v1.0.0-beta.6`; `master` also contains subsequent CLI/style work awaiting the next bundled beta.
+`master` is the final v1 release candidate. The implementation has completed a week-long real-world beta evaluation across the supported Linux host-TUN, DNS, profile lifecycle, peer, and Service traffic paths.
 
 Implemented and exercised on the playground VM:
 
@@ -24,12 +24,7 @@ Implemented and exercised on the playground VM:
 
 Validated VM scenarios include effective/raw peer connectivity, HTTP to an ordinary peer, fragmented ICMP, DNS/PTR resolution, login/logout, live add-then-login, control-group access, restart/cleanup, and repeated OpenSSH connections using the default ML-KEM hybrid key exchange.
 
-Still required before final-v1 sign-off:
-
-- explicitly purge conntrack/fragment state owned by a degraded or logged-out profile;
-- complete rate-limited operational-error reporting and a documented metrics surface;
-- run the full multi-profile degradation/recovery and upgrade/rollback test matrix; and
-- final documentation and security review.
+Final-v1 sign-off work is complete: withdrawn profile state is purged, status exposes bounded datapath counters and rate-limited errors, operations/security runbooks are published, Service HTTPS has passed against a known-good deployment, and extended beta evaluation found no blocking defect.
 
 ## Goals
 
@@ -202,13 +197,13 @@ If an external resolver returns a canonical Tailscale IP:
 | 0.5 — tsnet feasibility | Complete | Exact upstream module pinned; custom-TUN, LocalAPI inventory/DNS, and real-tailnet feasibility gate recorded in `docs/milestone_0.5_results.md`. |
 | 1 — profile runtime | Complete | One `tsnet.Server` and internal TUN per profile, separate state directories, LocalAPI status/watchers, degradation/backoff. |
 | 2 — aggregate model | Complete | Ordered peer/Service inventory, canonical collision preservation, deterministic effective leases, online state in live status. |
-| 3 — DNS | Complete for beta | Effective A/PTR, ordered suffix forwarding, UDP/TCP+EDNS, DNS rewrite, resolved reconciliation, reverse route domains, DNSSEC/DNS-over-TLS-off link policy, and validated Service HTTPS DNS path. |
-| 4 — host TUN | Complete for beta | Linux TUN, dedicated table/rules, dynamic `/32` routes, overlap/native-daemon protection, cleanup, and batched reads. |
-| 5 — effective IPv4 datapath | Complete for beta | IPv4 TCP/UDP/ICMP, checksums, bounded fragments, effective inbound mapping, and VM HTTP/SSH plus known-good Service HTTPS validation. |
-| 6 — raw canonical routing | Complete for beta | Ordered peer/Service inventory lookup, raw flow state, profile-self source translation, and VM ICMP/TCP validation. |
-| 7 — deployment hardening | In progress | Systemd, resolved cleanup, control authorization, SQLite recovery, diagnostics, restart policy, profile-state purge, and status metrics are implemented. Full recovery matrix, release/runbook review, and final security review remain. |
+| 3 — DNS | Complete | Effective A/PTR, ordered suffix forwarding, UDP/TCP+EDNS, DNS rewrite, resolved reconciliation, reverse route domains, DNSSEC/DNS-over-TLS-off link policy, and validated Service HTTPS DNS path. |
+| 4 — host TUN | Complete | Linux TUN, dedicated table/rules, dynamic `/32` routes, overlap/native-daemon protection, cleanup, and batched reads. |
+| 5 — effective IPv4 datapath | Complete | IPv4 TCP/UDP/ICMP, checksums, bounded fragments, effective inbound mapping, and VM HTTP/SSH plus known-good Service HTTPS validation. |
+| 6 — raw canonical routing | Complete | Ordered peer/Service inventory lookup, raw flow state, profile-self source translation, and VM ICMP/TCP validation. |
+| 7 — deployment hardening | Complete | Systemd, resolved cleanup, constrained control authorization, SQLite recovery, diagnostics, restart policy, profile-state purge, status metrics, operations runbook, security review, and extended beta validation. |
 
-The near-term priority is Milestone 7 closure, not new v1 features.
+Future work is post-v1 enhancement, not a v1 release blocker.
 ## Default values
 
 - Default TUN interface name: `multitail0`
@@ -233,10 +228,10 @@ The deliberate exception is profile addition: `profiles login` reloads the autho
 Later we can add explicit reload and a `SIGHUP` handler for full reconciliation.
 ## Management model
 
-V1 has a daemon-owned Unix-domain control socket. `tsmultitail` uses it for interactive profile login/logout and live status/diagnostics. Logout requires explicit confirmation, immediately withdraws the selected profile's routes/DNS/flows, and retains its configuration and state for later re-login. The socket is local-only, root-owned, group-owned by `tsmultitail`, mode `0660`, and authorizes callers using Unix peer credentials. Members of the `tsmultitail` group may perform management operations and read live metadata.
+V1 has a daemon-owned Unix-domain control socket. `tsmultitail` uses it for interactive profile login/logout and live status/diagnostics. Logout requires explicit confirmation, immediately withdraws the selected profile's routes/DNS/flows, and retains its configuration and state for later re-login. The socket is local-only, root-owned, group-owned by `tsmultitail`, mode `0660`, and authorizes callers using Unix peer credentials. Group members may read metadata, login/logout configured profiles, and request controlled restart; config writes require UID 0.
 
-The authoritative YAML config is system-managed at `/etc/tailscale-multitail/config.yaml`. While the daemon runs, authorized CLI config mutations go through its Unix control socket; the daemon performs an atomic, locked rewrite. Initial `config init` before the daemon exists requires root/sudo. Manual editing remains supported for administrators. Most config changes require a daemon restart in v1; `tsmultitail daemon restart` asks the daemon to exit cleanly and its systemd unit starts the new generation. As a usability exception, `profiles login` reads the authoritative YAML and starts profiles newly added since daemon startup, so `profiles add` can be followed immediately by login. Changes to existing profiles, removals, ordering, and global settings still require restart.
+The authoritative YAML config is system-managed at `/etc/tailscale-multitail/config.yaml`. Root CLI config mutations go through its Unix control socket; the daemon performs an atomic, locked rewrite. Initial `config init` before the daemon exists requires root/sudo. Manual editing remains supported for administrators. Most config changes require a daemon restart in v1; `tsmultitail daemon restart` asks the daemon to exit cleanly and its systemd unit starts the new generation. As a usability exception, `profiles login` reads the authoritative YAML and starts profiles newly added since daemon startup, so a root-created `profiles add` can be followed immediately by login. Changes to existing profiles, removals, ordering, and global settings still require restart.
 
-## Immediate next step
+## Post-v1 next steps
 
-Complete the Milestone 7 recovery/upgrade matrix, release runbook, and final security review.
+Maintain the pinned upstream dependency, run the recovery matrix for each upgrade, and consider source-built Nix flake/module packaging, IPv6 datapath support, and full declarative reload reconciliation.

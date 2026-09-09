@@ -13,7 +13,7 @@ CLI binary:
 V1 is a system-daemon design. Management is CLI-first, with a project-specific authenticated Unix control socket:
 - the authoritative config is `/etc/tailscale-multitail/config.yaml`
 - YAML has a required schema version and strict decoding rejects unknown fields
-- while the daemon runs, authorized config commands use its local socket and the daemon atomically rewrites canonical YAML
+- while the daemon runs, root-authorized config commands use its local socket and the daemon atomically rewrites canonical YAML
 - `config init` before the daemon exists requires sudo/root
 - the CLI uses the local daemon socket for login, logout, and live status
 - config changes take effect after daemon restart
@@ -30,25 +30,19 @@ split binaries for daemon and CLI:
    - `tailscale-multitaild`
    - `tsmultitail`
 
-The CLI manages config and invokes daemon-side profile login/logout and live-status operations over the authenticated local control socket.
+The CLI invokes daemon-side profile login/logout and live-status operations over the authenticated local control socket. Config mutation through that socket requires UID 0.
 
 ## Global flags
 
-Available on most subcommands:
+Global CLI flags must appear before the command:
 
-- `--config <path>`
-  - explicit config file path
-- `--verbose`
-  - increase log verbosity
-- `--json`
-  - JSON output for machine-readable commands where applicable
+- `--config <path>` — explicit config file path;
+- `--socket <path>` — daemon control socket path; and
+- `--version` — print the CLI version and exit.
 
-Daemon-only flags may also include:
-
-- `--foreground`
-  - stay in foreground instead of daemon-style service behavior
-- `--validate-config`
-  - validate config and exit
+Daemon `run` flags include `--config`, `--state-root`, `--validate-config`,
+`--once`, `--dns-listen`, `--host-tun`, `--resolved`, `--socket`, and temporary
+`--debug-packets` diagnostics.
 
 ## Top-level commands
 

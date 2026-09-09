@@ -43,11 +43,19 @@ unset KEY
 
 Interactive login is also supported; omit `--auth-key-stdin` and open the
 returned URL. Profile order controls raw canonical-IP first-match selection.
-Config changes are atomically written through the authenticated control socket
-while the daemon runs and take effect after:
+Root may atomically rewrite config through the authenticated control socket
+while the daemon runs; members of `tsmultitail` may use live status,
+login/logout, and controlled restart but cannot rewrite root-owned config.
+Changes to existing profiles and global settings take effect after:
 
 ```sh
 tsmultitail daemon restart
+```
+
+Place global flags before the command, for example:
+
+```sh
+tsmultitail --socket /run/tailscale-multitail/control.sock status
 ```
 
 Useful checks:
@@ -63,7 +71,8 @@ tsmultitail status
 - strict versioned YAML config at `/etc/tailscale-multitail/config.yaml`;
 - profile state and SQLite effective leases in
   `/var/lib/tailscale-multitail/`;
-- root-owned, group-authorized control socket using `SO_PEERCRED`;
+- root-owned control socket using `SO_PEERCRED`, with constrained
+  `tsmultitail`-group operational authority;
 - `multitail0`, routing table 552, and reserved rule priorities 5260–5269;
 - effective A/PTR records plus profile-scoped DNS forwarding through
   systemd-resolved without claiming the default DNS route;
@@ -75,6 +84,10 @@ Auth keys are accepted only from authorized stdin forwarding or profile
 environment variables and are never written to YAML, SQLite, or status output.
 `--debug-packets` is intended only for temporary diagnostics because it exposes
 network metadata in logs.
+
+NixOS deployments should generate the YAML declaratively and disable native
+`services.tailscale`; do not use imperative config-mutation commands against a
+store-backed `/etc` configuration.
 
 See `PLAN.md`, `docs/architecture.md`, `docs/command-line.md`,
 `docs/operations.md`, and `docs/security-review.md` for detailed semantics,
