@@ -87,7 +87,8 @@ network metadata in logs.
 
 NixOS deployments should generate the YAML declaratively and disable native
 `services.tailscale`; do not use imperative config-mutation commands against a
-store-backed `/etc` configuration.
+store-backed `/etc` configuration. See [`docs/nix.md`](docs/nix.md) for the
+bundled flake and NixOS module.
 
 See `PLAN.md`, `docs/architecture.md`, `docs/command-line.md`,
 `docs/operations.md`, and `docs/security-review.md` for detailed semantics,
