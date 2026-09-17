@@ -15,6 +15,7 @@ import (
 
 	"github.com/jay/tailscale-multitail/internal/config"
 	"github.com/jay/tailscale-multitail/internal/control"
+	"github.com/jay/tailscale-multitail/internal/inventory"
 	"github.com/vishvananda/netlink"
 )
 
@@ -91,11 +92,7 @@ func main() {
 		doctor(*p)
 
 	case "status":
-		r, e := control.Client(*socket, "status")
-		if e != nil {
-			die("status: %v", e)
-		}
-		json.NewEncoder(os.Stdout).Encode(r.Result)
+		statusCmd(*socket, a[1:])
 
 	case "daemon":
 		if len(a) != 2 || a[1] != "restart" {
@@ -109,6 +106,87 @@ func main() {
 	default:
 		die("unknown command %q", a[0])
 
+	}
+}
+
+type statusPayload struct {
+	Targets []inventory.Target `json:"targets"`
+}
+
+type statusRow struct {
+	ProfileName string
+	FQDN        string
+	CanonicalIP string
+	Online      string
+}
+
+func statusCmd(socket string, args []string) {
+	fs := flag.NewFlagSet("status", flag.ContinueOnError)
+	asJSON := fs.Bool("json", false, "print machine-readable JSON")
+	parse(fs, args)
+	if len(fs.Args()) != 0 {
+		die("unexpected arguments: %s", strings.Join(fs.Args(), " "))
+	}
+
+	r, e := control.Client(socket, "status")
+	if e != nil {
+		die("status: %v", e)
+	}
+
+	if *asJSON {
+		if e := json.NewEncoder(os.Stdout).Encode(r.Result); e != nil {
+			die("status JSON: %v", e)
+		}
+		return
+	}
+
+	b, e := json.Marshal(r.Result)
+	if e != nil {
+		die("decode status: %v", e)
+	}
+
+	var payload statusPayload
+	if e := json.Unmarshal(b, &payload); e != nil {
+		die("decode status: %v", e)
+	}
+
+	writeStatusTable(os.Stdout, payload.Targets)
+}
+
+func writeStatusTable(w io.Writer, targets []inventory.Target) {
+	rows := make([]statusRow, 0, len(targets))
+	for _, target := range targets {
+		online := "-"
+		if target.Kind == inventory.Node {
+			online = "false"
+			if target.Online {
+				online = "true"
+			}
+		}
+
+		rows = append(rows, statusRow{
+			ProfileName: target.ProfileName,
+			FQDN:        strings.TrimSuffix(target.FQDN, "."),
+			CanonicalIP: target.CanonicalIP.String(),
+			Online:      online,
+		})
+	}
+
+	profileWidth := len("PROFILE_NAME")
+	fqdnWidth := len("FQDN")
+	canonicalIPWidth := len("CANONICAL_IP")
+	onlineWidth := len("ONLINE")
+	for _, row := range rows {
+		profileWidth = max(profileWidth, len(row.ProfileName))
+		fqdnWidth = max(fqdnWidth, len(row.FQDN))
+		canonicalIPWidth = max(canonicalIPWidth, len(row.CanonicalIP))
+		onlineWidth = max(onlineWidth, len(row.Online))
+	}
+
+	format := fmt.Sprintf("%%-%ds  %%-%ds  %%-%ds  %%-%ds\n", profileWidth, fqdnWidth, canonicalIPWidth, onlineWidth)
+	fmt.Fprintf(w, format, "PROFILE_NAME", "FQDN", "CANONICAL_IP", "ONLINE")
+	for _, row := range rows {
+		fmt.Fprintf(w, format, row.ProfileName, row.FQDN, row.CanonicalIP, row.Online)
 	}
 }
 

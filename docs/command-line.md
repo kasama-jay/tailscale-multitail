@@ -295,9 +295,15 @@ V1 behavior:
 
 ## `tsmultitail status`
 
-Print live daemon status as JSON through the authenticated local control socket.
+Print a width-aligned human-readable table through the authenticated local control socket. It contains `PROFILE_NAME`, `FQDN`, `CANONICAL_IP`, and `ONLINE`; Service rows display `-` for `ONLINE` because Services do not have peer presence.
 
-The response contains profile state, ordered peer/Service targets, effective leases, and `datapath` counters. Node targets include `online`, which reflects upstream Tailscale control-plane presence. Service targets do not have peer online state.
+Pass `--json` after `status` to emit the complete existing machine-readable response instead:
+
+```sh
+tsmultitail status --json
+```
+
+The JSON response contains profile state, ordered peer/Service targets, effective leases, and `datapath` counters. Node targets include `online`, which reflects upstream Tailscale control-plane presence.
 
 `datapath` is the v1 metrics surface: `host_packets`, `profile_packets`, `drops`, flow/fragment-capacity drops, current flow/fragment counts, profile-state purge totals, and emitted rate-limited operational errors. Counters reset when the daemon restarts.
 
