@@ -1,5 +1,5 @@
 VERSION ?= 0.5.0
-V1_VERSION ?= 1.0.1
+V1_VERSION ?= 1.1.0
 DIST := dist/tailscale-multitail-feasibility_$(VERSION)_linux_amd64
 V1_DIST := dist/tailscale-multitail_$(V1_VERSION)_linux_amd64
 

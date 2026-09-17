@@ -36,7 +36,7 @@ in {
     assertions = [
       {
         assertion = pkgs.stdenv.hostPlatform.system == "x86_64-linux";
-        message = "tailscale-multitail v1.0.1 currently ships a Linux x86_64 package only.";
+        message = "tailscale-multitail v1.1.0 currently ships a Linux x86_64 package only.";
       }
       {
         assertion = !config.services.tailscale.enable;
