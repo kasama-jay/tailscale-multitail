@@ -25,7 +25,8 @@ func TestWriteStatusTable(t *testing.T) {
 		},
 		{
 			ProfileName: "home",
-			FQDN:        "svc.example.ts.net.",
+			FQDN:        "ignored.example.ts.net.",
+			ID:          "service-id",
 			CanonicalIP: mustAddr("100.1.2.3"),
 			Kind:        inventory.Service,
 		},
@@ -52,7 +53,11 @@ func TestWriteStatusTable(t *testing.T) {
 		}
 	}
 
-	if !strings.HasSuffix(strings.TrimSpace(lines[1]), "true") || !strings.HasSuffix(strings.TrimSpace(lines[2]), "-") {
+	if !strings.HasSuffix(strings.TrimSpace(lines[1]), "online") || !strings.HasSuffix(strings.TrimSpace(lines[2]), "-") {
 		t.Fatalf("unexpected online values:\n%s", out.String())
+	}
+
+	if !strings.Contains(lines[2], "service-id") || strings.Contains(lines[2], "ignored.example") {
+		t.Fatalf("service row does not use its ID as FQDN: %q", lines[2])
 	}
 }

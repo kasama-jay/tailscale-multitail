@@ -158,15 +158,20 @@ func writeStatusTable(w io.Writer, targets []inventory.Target) {
 	for _, target := range targets {
 		online := "-"
 		if target.Kind == inventory.Node {
-			online = "false"
+			online = "offline"
 			if target.Online {
-				online = "true"
+				online = "online"
 			}
+		}
+
+		fqdn := strings.TrimSuffix(target.FQDN, ".")
+		if target.Kind == inventory.Service {
+			fqdn = target.ID
 		}
 
 		rows = append(rows, statusRow{
 			ProfileName: target.ProfileName,
-			FQDN:        strings.TrimSuffix(target.FQDN, "."),
+			FQDN:        fqdn,
 			CanonicalIP: target.CanonicalIP.String(),
 			Online:      online,
 		})

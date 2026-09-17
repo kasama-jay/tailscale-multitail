@@ -295,7 +295,7 @@ V1 behavior:
 
 ## `tsmultitail status`
 
-Print a width-aligned human-readable table through the authenticated local control socket. It contains `PROFILE_NAME`, `FQDN`, `CANONICAL_IP`, and `ONLINE`; Service rows display `-` for `ONLINE` because Services do not have peer presence.
+Print a width-aligned human-readable table through the authenticated local control socket. It contains `PROFILE_NAME`, `FQDN`, `CANONICAL_IP`, and `ONLINE`; node rows display `online` or `offline`. Service rows display their Service ID in the `FQDN` column and `-` for `ONLINE`, because Services do not have peer presence.
 
 Pass `--json` after `status` to emit the complete existing machine-readable response instead:
 

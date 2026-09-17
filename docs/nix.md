@@ -1,6 +1,6 @@
 # NixOS installation
 
-The repository exposes a flake package and NixOS module for the v1.1.0 Linux
+The repository exposes a flake package and NixOS module for the v1.1.1 Linux
 x86_64 release artifact. The module installs the daemon and CLI, generates the
 strict YAML configuration declaratively, creates the management group, and
 installs the hardened systemd service.
@@ -10,7 +10,7 @@ installs the hardened systemd service.
 Add the input to your system flake:
 
 ```nix
-inputs.tailscale-multitail.url = "github:kasama-jay/tailscale-multitail/v1.1.0";
+inputs.tailscale-multitail.url = "github:kasama-jay/tailscale-multitail/v1.1.1";
 ```
 
 Import the module and configure it:
@@ -80,8 +80,8 @@ configuration writes.
 For the CLI package only:
 
 ```sh
-nix profile install github:kasama-jay/tailscale-multitail/v1.1.0
+nix profile install github:kasama-jay/tailscale-multitail/v1.1.1
 ```
 
 The package and module currently support `x86_64-linux` because that is the
-published v1.1.0 release architecture.
+published v1.1.1 release architecture.
