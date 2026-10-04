@@ -17,6 +17,10 @@ make release-v1 V1_VERSION=1.0.0
 Artifacts are written under `dist/tailscale-multitail_1.0.0_linux_amd64/`.
 The pinned upstream version is recorded in `go.mod`.
 
+An opt-in, host-routing-free exit-node feasibility gate is documented in
+[`docs/exit-node-milestone-1.md`](docs/exit-node-milestone-1.md). It does not
+activate exit-node support in the daemon.
+
 ## Install
 
 Create the management group, install the binaries/unit, and initialize config:
