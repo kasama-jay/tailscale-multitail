@@ -2,11 +2,11 @@
 
 stdenvNoCC.mkDerivation (finalAttrs: {
   pname = "tailscale-multitail";
-  version = "1.1.1";
+  version = "1.1.2";
 
   src = fetchurl {
     url = "https://github.com/kasama-jay/tailscale-multitail/releases/download/v${finalAttrs.version}/tailscale-multitail_${finalAttrs.version}_linux_amd64.tar.gz";
-    hash = "sha256-XtryuBoQbpYkQXfxA9g4WX93ovzaG7bPZ1WFVa7ujWk=";
+    hash = "sha256-gwGrKnIsVPQdX89LT+9ylUkSNqt8Df9JAlkkschaOgU=";
   };
 
   dontConfigure = true;
