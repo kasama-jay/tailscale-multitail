@@ -29,6 +29,7 @@ type Device struct {
 	routes  []netlink.Route
 	rule    netlink.Rule
 	pending [][]byte
+	readErr error
 }
 
 func CheckNativeTailscale() error {
@@ -237,7 +238,13 @@ func (d *Device) ReadPacket(buf []byte) ([]byte, error) {
 		return p, nil
 	}
 
-	if len(buf) < device.MessageTransportHeaderSize+1 {
+	if d.readErr != nil {
+		err := d.readErr
+		d.readErr = nil
+		return nil, err
+	}
+
+	if len(buf) < 1 {
 		return nil, fmt.Errorf("host TUN buffer too short")
 	}
 
@@ -246,32 +253,28 @@ func (d *Device) ReadPacket(buf []byte) ([]byte, error) {
 		batchSize = 1
 	}
 
-	bufs := make([][]byte, batchSize)
-	bufs[0] = buf
-	for i := 1; i < batchSize; i++ {
-		bufs[i] = make([]byte, len(buf))
-	}
-
-	sizes := make([]int, batchSize)
-	n, err := d.Tun.Read(bufs, sizes, device.MessageTransportHeaderSize)
-	if err != nil {
+	slab := make([]byte, batchSize*len(buf)+(batchSize+1)*tun.ReadPacketSpacing)
+	packets := make([]tun.ReadPacket, batchSize)
+	n, err := d.Tun.Read(slab, packets)
+	if n == 0 && err != nil {
 		return nil, err
 	}
 
-	if n < 1 || n > len(bufs) {
+	if n < 1 || n > len(packets) {
 		return nil, fmt.Errorf("invalid host TUN batch %d", n)
 	}
 
-	for i := 0; i < n; i++ {
-		if sizes[i] < 1 || device.MessageTransportHeaderSize+sizes[i] > len(bufs[i]) {
-			return nil, fmt.Errorf("invalid host TUN packet size %d", sizes[i])
+	for _, packet := range packets[:n] {
+		if packet.Offset < tun.ReadPacketSpacing || packet.Size < 1 || packet.Offset > len(slab)-tun.ReadPacketSpacing || packet.Size > len(slab)-tun.ReadPacketSpacing-packet.Offset {
+			return nil, fmt.Errorf("invalid host TUN packet offset %d size %d", packet.Offset, packet.Size)
 		}
-		headerSize := device.MessageTransportHeaderSize
-		d.pending = append(
-			d.pending,
-			append([]byte(nil), bufs[i][headerSize:headerSize+sizes[i]]...),
-		)
 	}
+	for _, packet := range packets[:n] {
+		d.pending = append(d.pending, append([]byte(nil), slab[packet.Offset:packet.Offset+packet.Size]...))
+	}
+	// The new Reader API permits valid packets alongside an error. Drain them
+	// before returning the error to the caller.
+	d.readErr = err
 
 	p := d.pending[0]
 	d.pending = d.pending[1:]

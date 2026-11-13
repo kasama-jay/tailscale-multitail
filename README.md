@@ -9,6 +9,9 @@ effective IPv4 addresses, and ordered raw-canonical IPv4 routing.
 
 ## Build and test
 
+Requires Go 1.27.4 or newer. See [dependency upgrade notes](docs/dependencies.md)
+for upstream compatibility requirements.
+
 ```sh
 go test ./...
 make release-v1 V1_VERSION=1.0.0

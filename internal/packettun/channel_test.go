@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"io"
 	"testing"
+
+	"github.com/tailscale/wireguard-go/tun"
 )
 
 func TestTryInjectDoesNotBlockOnFullQueue(t *testing.T) {
@@ -17,6 +19,36 @@ func TestTryInjectDoesNotBlockOnFullQueue(t *testing.T) {
 	}
 }
 
+func TestReadBufferRequirements(t *testing.T) {
+	for _, tc := range []struct {
+		name                  string
+		slabSize, packetCount int
+	}{
+		{"no metadata", 256, 0},
+		{"no spacing", 2*tun.ReadPacketSpacing - 1, 1},
+		{"packet too large", 2*tun.ReadPacketSpacing + 2, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := New("test", 1280, 1)
+			defer d.Close()
+			if err := d.Inject([]byte{1, 2, 3}); err != nil {
+				t.Fatal(err)
+			}
+			if n, err := d.Read(make([]byte, tc.slabSize), make([]tun.ReadPacket, tc.packetCount)); n != 0 || err != tun.ErrTooManySegments {
+				t.Fatalf("Read = %d, %v, want 0, ErrTooManySegments", n, err)
+			}
+		})
+	}
+}
+
+func TestReadAfterClose(t *testing.T) {
+	d := New("test", 1280, 1)
+	d.Close()
+	if n, err := d.Read(make([]byte, 256), make([]tun.ReadPacket, 1)); n != 0 || err != io.EOF {
+		t.Fatalf("Read = %d, %v, want 0, EOF", n, err)
+	}
+}
+
 func TestPacketOwnershipAndDirection(t *testing.T) {
 	d := New("profile-test", 1280, 2)
 	defer d.Close()
@@ -26,12 +58,16 @@ func TestPacketOwnershipAndDirection(t *testing.T) {
 		t.Fatal(err)
 	}
 	in[0] = 9
-	buf := make([]byte, 16)
-	n, err := d.Read([][]byte{buf}, make([]int, 1), 4)
+	buf := make([]byte, 2*tun.ReadPacketSpacing+len(in))
+	packets := make([]tun.ReadPacket, d.BatchSize())
+	n, err := d.Read(buf, packets)
 	if err != nil || n != 1 {
 		t.Fatalf("Read = %d, %v", n, err)
 	}
-	if got := buf[4:7]; !bytes.Equal(got, []byte{1, 2, 3}) {
+	if packets[0].Offset != tun.ReadPacketSpacing || packets[0].Size != len(in) {
+		t.Fatalf("Read metadata = %+v", packets[0])
+	}
+	if got := buf[packets[0].Offset : packets[0].Offset+packets[0].Size]; !bytes.Equal(got, []byte{1, 2, 3}) {
 		t.Fatalf("Read packet = %v", got)
 	}
 

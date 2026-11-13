@@ -89,19 +89,19 @@ func (d *Device) send(ch chan<- []byte, packet []byte) error {
 }
 
 // Read implements tun.Device. tsnet calls it to obtain packets to transmit.
-func (d *Device) Read(bufs [][]byte, sizes []int, offset int) (int, error) {
-	if len(bufs) == 0 || len(sizes) < len(bufs) {
-		return 0, errors.New("invalid TUN read batch")
+func (d *Device) Read(slab []byte, packets []tun.ReadPacket) (int, error) {
+	if len(packets) < d.BatchSize() || len(slab) < 2*tun.ReadPacketSpacing {
+		return 0, tun.ErrTooManySegments
 	}
 
 	select {
 	case p := <-d.toEngine:
-		if len(bufs[0]) < offset+len(p) {
-			return 0, io.ErrShortBuffer
+		if len(p) > len(slab)-2*tun.ReadPacketSpacing {
+			return 0, tun.ErrTooManySegments
 		}
 
-		copy(bufs[0][offset:], p)
-		sizes[0] = len(p)
+		copy(slab[tun.ReadPacketSpacing:], p)
+		packets[0] = tun.ReadPacket{Offset: tun.ReadPacketSpacing, Size: len(p)}
 		return 1, nil
 
 	case <-d.done:
